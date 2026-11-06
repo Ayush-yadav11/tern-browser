@@ -42,6 +42,10 @@ function serve() {
     if (req.url.startsWith('/ok.gif')) {
       res.writeHead(200, { 'content-type': 'image/png' });
       res.end(PNG);
+    } else if (req.url.startsWith('/doc.pdf')) {
+      const pdf = '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF';
+      res.writeHead(200, { 'content-type': 'application/pdf' });
+      res.end(pdf);
     } else if (req.url.startsWith('/report.txt') || req.url.startsWith('/popup.txt')) {
       res.writeHead(200, { 'content-type': 'text/plain', 'content-disposition': 'attachment' });
       res.end('hello from the test server');
@@ -133,6 +137,7 @@ async function main() {
   const startMs = Date.now() - t0;
   const { tabs, shell, win } = b;
   const shellEval = (code) => shell.executeJavaScript(code, true);
+  const inShell = (fn) => shellEval(`(${fn})()`);
   const shot = async (wc, name) => {
     await sleep(400);
     // Windows can't capture while the screen is locked or off. That says nothing about the browser.
@@ -175,7 +180,7 @@ async function main() {
     assert.equal(s.theme, 'midnight');
     assert.equal(s.radius, 16);
     assert.equal(s.accent, '');
-    assert.equal(s.toolbarItems.length, 10);
+    assert.equal(s.toolbarItems.length, 11);
     assert.equal(s.toolbarItems.find((i) => i.id === 'url').visible, true);
   });
 
@@ -265,7 +270,7 @@ async function main() {
     b.updateSettings({ tabPosition: 'left' });
     await sleep(500);
     const rect = await shellEval('(() => { const r = document.getElementById("content").getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y) }; })()');
-    assert.equal(rect.x, 220);
+    assert.equal(rect.x, 44, 'narrow until hovered');
     assert.deepEqual({ x: tab.view.getBounds().x, y: tab.view.getBounds().y }, rect);
   });
   await shot(shell, '03-shell-left-tabs');
@@ -285,7 +290,7 @@ async function main() {
     assert.equal(info.accent, '#00aa66');
     assert.equal(info.markFill, 'rgb(0, 170, 102)', 'accent reaches elements');
     assert.equal(info.compact, true);
-    assert.equal(info.first, 'customize-btn');
+    assert.equal(info.first, 'menu-btn');
   });
   await shot(shell, '04-shell-paper-right');
 
@@ -298,6 +303,118 @@ async function main() {
     assert.equal(tab.view.getBounds().width, before - 310);
     await shot(shell, '05-customize-panel');
     await shellEval("togglePanel('customize')");
+  });
+
+  await check('side tabs: expand over the page on hover without moving it, and shrink again', async () => {
+    b.updateSettings({ tabPosition: 'left', toolbarPosition: 'top', theme: 'midnight', accent: '', compact: false });
+    await sleep(500);
+    const page = tab.view.getBounds();
+    const stripWidth = () => inShell(() => Math.round(document.getElementById('tabs').getBoundingClientRect().width));
+    const onTop = () => win.contentView.children.at(-1);
+    assert.equal(await stripWidth(), 44);
+    assert.equal(await inShell(() => getComputedStyle(document.querySelector('.tab-title')).display), 'none');
+    assert.equal(onTop(), tab.view, 'page is on top while narrow');
+    wc().focus();
+    await waitFor(() => wc().isFocused(), 2000);
+    await inShell(() => document.getElementById('tabs').dispatchEvent(new MouseEvent('mouseenter')));
+    await waitFor(async () => (await stripWidth()) === 220, 2000);
+    assert.equal(onTop().webContents, shell, 'tabs are above the page');
+    assert.equal(wc().isFocused(), true, 'hovering keeps keyboard focus in the page');
+    assert.deepEqual(tab.view.getBounds(), page, 'the page did not move');
+    assert.notEqual(await inShell(() => getComputedStyle(document.querySelector('.tab-title')).display), 'none');
+
+    const other = tabs.create(`${base}/hover-switch`);
+    await waitFor(() => other.view && !other.loading);
+    assert.equal(onTop().webContents, shell, 'still above after switching tabs');
+    tabs.close(other.id);
+    await shellEval(`window.tern.activate(${tab.id})`);
+    await waitFor(() => wc().isFocused(), 2000);
+
+    await inShell(() => document.getElementById('tabs').dispatchEvent(new MouseEvent('mouseleave')));
+    await waitFor(async () => (await stripWidth()) === 44, 2000);
+    await waitFor(() => onTop() === tab.view, 2000);
+    assert.equal(wc().isFocused(), true, 'and after shrinking');
+
+    b.updateSettings({ sideCollapse: false });
+    await sleep(400);
+    assert.equal(await stripWidth(), 220, 'can stay open all the time');
+    b.updateSettings({ sideCollapse: true, tabPosition: 'right' });
+    await sleep(400);
+    assert.equal(await stripWidth(), 44);
+    assert.deepEqual({ x: tab.view.getBounds().x }, { x: 0 });
+    b.updateSettings({ tabPosition: 'top' });
+    await sleep(400);
+  });
+
+  await check('tabs: pin keeps a tab first, and duplicate, close others and close right work', async () => {
+    const a = tabs.create(`${base}/a`, { activate: false });
+    const c = tabs.create(`${base}/c`, { activate: false });
+    tabs.togglePinned(c.id);
+    assert.equal(tabs.tabs[0], c, 'pinned goes first');
+    tabs.move(a.id, 0);
+    assert.equal(tabs.tabs[0], c, 'nothing moves ahead of a pinned tab');
+    assert.equal(tabs.serialize().tabs.find((t) => t.url.endsWith('/c')).pinned, true, 'pin is remembered');
+    tabs.duplicate(tab.id);
+    const copy = tabs.active;
+    assert.equal(copy.url, tab.url);
+    assert.equal(tabs.tabs.indexOf(copy), tabs.tabs.indexOf(tab) + 1);
+    tabs.closeToRight(tab.id);
+    assert.ok(!tabs.tabs.includes(copy));
+    tabs.closeOthers(tab.id);
+    assert.deepEqual(tabs.tabs.map((t) => t.id).sort(), [c.id, tab.id].sort(), 'pinned tab survives close others');
+    tabs.togglePinned(c.id);
+    tabs.close(c.id);
+    tabs.activate(tab.id);
+  });
+
+  await check('tabs: mute silences the page, and the sound button shows', async () => {
+    tabs.toggleMuted(tab.id);
+    assert.equal(wc().isAudioMuted(), true);
+    await waitFor(() => inShell(() => !document.querySelector('.tab.active .tab-audio').hidden), 2000);
+    assert.equal(await inShell(() => document.querySelector('.tab.active .tab-audio').dataset.mark), 'muted');
+    tabs.toggleMuted(tab.id);
+    assert.equal(wc().isAudioMuted(), false);
+  });
+
+  await check('menus: main, tab and right-click menus offer the basics', () => {
+    const labels = (items) => items.map((i) => i.label ?? i.role).filter(Boolean);
+    const main = labels(b.mainMenuItems());
+    for (const want of ['New tab', 'New Tor tab', 'Bookmarks', 'History', 'Downloads', 'Zoom in', 'Zoom out', 'Find in page', 'Print…', 'Save page as…', 'Customize', 'About Tern', 'Exit']) {
+      assert.ok(main.includes(want), want);
+    }
+    assert.ok(main.includes('Reset zoom (100%)'));
+    const onTab = labels(tabs.tabMenuItems(tab));
+    for (const want of ['Reload', 'Duplicate', 'Pin', 'Mute site', 'Close', 'Close other tabs', 'Close tabs to the right', 'Reopen closed tab']) {
+      assert.ok(onTab.includes(want), want);
+    }
+    const onPage = labels(tabs.contextItems(tab, wc(), { linkURL: 'https://a.example/', mediaType: 'image', srcURL: 'https://a.example/i.png', selectionText: 'hello', isEditable: false, x: 1, y: 1 }));
+    for (const want of ['Open link in new tab', 'Save link as…', 'Copy link address', 'Save image as…', 'Copy image', 'Search for "hello"', 'Save page as…', 'Print…', 'Back', 'Inspect']) {
+      assert.ok(onPage.includes(want), want);
+    }
+    const inBox = labels(tabs.contextItems(tab, wc(), { linkURL: '', mediaType: 'none', srcURL: '', selectionText: '', isEditable: true, x: 1, y: 1 }));
+    for (const want of ['undo', 'redo', 'cut', 'copy', 'paste', 'selectAll']) assert.ok(inBox.includes(want), want);
+  });
+
+  await check('zoom: the main menu shows the current level', async () => {
+    wc().setZoomFactor(1.5);
+    assert.ok(b.mainMenuItems().some((i) => i.label === 'Reset zoom (150%)'));
+    tabs.zoom(0);
+    assert.equal(tabs.zoomPercent(), 100);
+  });
+
+  await check('address bar: shows when a site is not secure', async () => {
+    await waitFor(() => inShell(() => document.getElementById('secure').className === 'not-secure' && !document.getElementById('secure').hidden), 3000);
+  });
+
+  await check('PDF: opens in the page instead of downloading', async () => {
+    const before = b.downloads.list().length;
+    await load(`${base}/doc.pdf`);
+    await sleep(1500);
+    assert.equal(b.downloads.list().length, before, 'not downloaded');
+    assert.equal(tab.url, `${base}/doc.pdf`);
+    assert.equal(tab.error, null);
+    assert.ok(wc().mainFrame.framesInSubtree.some((f) => f.url.startsWith('chrome-extension://')), 'the PDF viewer loaded');
+    await load(`${base}/ads`);
   });
 
   await check('tabs: open, switch, sleep frees the renderer, waking restores the page', async () => {
@@ -385,8 +502,6 @@ async function main() {
     await sleep(700);
     assert.deepEqual(tab.view.getBounds(), normal);
   });
-
-  const inShell = (fn) => shellEval(`(${fn})()`);
 
   const directHits = [];
   server.on('request', (req) => directHits.push(req.url));
@@ -762,6 +877,36 @@ async function main() {
   });
 
   const lastDownload = () => b.downloads.list()[0];
+  await check('clear browsing data: needs two clicks, removes history and cookies, keeps bookmarks', async () => {
+    await load(`${base}/ads?clear=1`);
+    await wc().executeJavaScript("document.cookie = 'a=1; max-age=999'; 0");
+    await waitFor(() => b.library.history.size > 0, 2000);
+    const marks = b.library.bookmarks.length;
+    await shellEval("showPanel('customize')");
+    await inShell(() => document.getElementById('clear-data').click());
+    await sleep(300);
+    assert.ok(b.library.history.size > 0, 'first click only asks');
+    await inShell(() => document.getElementById('clear-data').click());
+    await waitFor(() => b.library.history.size === 0, 3000);
+    await waitFor(async () => (await b.tabSession.cookies.get({})).length === 0, 3000);
+    assert.equal(b.library.bookmarks.length, marks);
+    await shellEval('togglePanel(openPanel)');
+  });
+
+  await check('save page: Ctrl+S saves the page to Downloads', async () => {
+    await load(`${base}/ads?saved=1`);
+    wc().focus();
+    await sleep(100);
+    const count = b.downloads.list().length;
+    wc().sendInputEvent({ type: 'keyDown', keyCode: 's', modifiers: ['control'] });
+    wc().sendInputEvent({ type: 'keyUp', keyCode: 's', modifiers: ['control'] });
+    await waitFor(() => b.downloads.list().length === count + 1 && b.downloads.list()[0].state === 'completed', 5000);
+    assert.ok(fs.existsSync(b.downloads.list()[0].path));
+    fs.rmSync(b.downloads.list()[0].path);
+    assert.equal(tab.url, `${base}/ads?saved=1`, 'the tab stays on its page');
+    await b.downloads.clearFinished();
+  });
+
   await check('downloads: saves to the Downloads folder, marked as coming from the internet', async () => {
     await load(`${base}/ads`);
     const count = b.downloads.list().length;

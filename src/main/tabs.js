@@ -9,7 +9,7 @@ const MAX_CLOSED = 20;
 // A tab only owns a renderer while it is awake. New tabs and sleeping tabs have
 // view === null, and the shell draws whatever belongs in the content area instead.
 class Tabs extends EventEmitter {
-  constructor({ window, session, torSession, onShortcut, getSleepMinutes, getWebRtcPolicy }) {
+  constructor({ window, session, torSession, onShortcut, getSleepMinutes, getWebRtcPolicy, getSearchUrl }) {
     super();
     this.window = window;
     this.session = session;
@@ -18,6 +18,7 @@ class Tabs extends EventEmitter {
     this.torSession = torSession;
     this.torReady = false;
     this.getWebRtcPolicy = getWebRtcPolicy;
+    this.getSearchUrl = getSearchUrl;
     this.tabs = [];
     this.activeId = null;
     this.nextId = 1;
@@ -57,6 +58,8 @@ class Tabs extends EventEmitter {
         error: t.error,
         sleeping: !t.view && Boolean(t.url),
         audible: Boolean(t.view?.webContents.isCurrentlyAudible()),
+        muted: t.muted,
+        pinned: t.pinned,
       })),
     };
   }
@@ -65,10 +68,12 @@ class Tabs extends EventEmitter {
     this.emit('changed');
   }
 
-  create(url = '', { activate = true, title = '', index, openedByPage = false, tor = false } = {}) {
+  create(url = '', { activate = true, title = '', index, openedByPage = false, tor = false, pinned = false } = {}) {
     const tab = {
       openedByPage,
       tor,
+      pinned,
+      muted: false,
       id: this.nextId++,
       url: isWebUrl(url) ? url : '',
       title,
@@ -187,7 +192,84 @@ class Tabs extends EventEmitter {
     if (from < 0 || !Number.isInteger(toIndex)) return;
     const [tab] = this.tabs.splice(from, 1);
     this.tabs.splice(Math.max(0, Math.min(toIndex, this.tabs.length)), 0, tab);
+    this.keepPinnedFirst();
     this.changed();
+  }
+
+  keepPinnedFirst() {
+    this.tabs = [...this.tabs.filter((t) => t.pinned), ...this.tabs.filter((t) => !t.pinned)];
+  }
+
+  togglePinned(id) {
+    const tab = this.byId(id);
+    if (!tab) return;
+    tab.pinned = !tab.pinned;
+    this.keepPinnedFirst();
+    this.changed();
+  }
+
+  toggleMuted(id) {
+    const tab = this.byId(id);
+    if (!tab) return;
+    tab.muted = !tab.muted;
+    tab.view?.webContents.setAudioMuted(tab.muted);
+    this.changed();
+  }
+
+  duplicate(id) {
+    const tab = this.byId(id);
+    if (!tab) return;
+    this.create(tab.url, { title: tab.title, tor: tab.tor, index: this.tabs.indexOf(tab) + 1 });
+  }
+
+  // Pinned tabs are only closed one at a time, on purpose.
+  closeOthers(id) {
+    if (!this.byId(id)) return;
+    this.activate(id);
+    this.tabs.filter((t) => t.id !== id && !t.pinned).forEach((t) => this.close(t.id));
+  }
+
+  closeToRight(id) {
+    const index = this.tabs.findIndex((t) => t.id === id);
+    if (index < 0) return;
+    this.activate(id);
+    this.tabs.slice(index + 1).filter((t) => !t.pinned).forEach((t) => this.close(t.id));
+  }
+
+  print(id) {
+    this.byId(id)?.view?.webContents.print({}, () => {});
+  }
+
+  savePage(id) {
+    const wc = this.byId(id)?.view?.webContents;
+    if (wc && isWebUrl(wc.getURL())) wc.downloadURL(wc.getURL());
+  }
+
+  zoomPercent() {
+    const wc = this.active?.view?.webContents;
+    return wc ? Math.round(wc.getZoomFactor() * 100) : 100;
+  }
+
+  tabMenu(id) {
+    const tab = this.byId(id);
+    if (!tab) return;
+    Menu.buildFromTemplate(this.tabMenuItems(tab)).popup({ window: this.window });
+  }
+
+  tabMenuItems(tab) {
+    const index = this.tabs.indexOf(tab);
+    return [
+      { label: 'Reload', enabled: Boolean(tab.url), click: () => this.reload(tab.id) },
+      { label: 'Duplicate', enabled: Boolean(tab.url), click: () => this.duplicate(tab.id) },
+      { label: tab.pinned ? 'Unpin' : 'Pin', click: () => this.togglePinned(tab.id) },
+      { label: tab.muted ? 'Unmute site' : 'Mute site', click: () => this.toggleMuted(tab.id) },
+      { type: 'separator' },
+      { label: 'Close', click: () => this.close(tab.id) },
+      { label: 'Close other tabs', enabled: this.tabs.some((t) => t !== tab && !t.pinned), click: () => this.closeOthers(tab.id) },
+      { label: 'Close tabs to the right', enabled: this.tabs.slice(index + 1).some((t) => !t.pinned), click: () => this.closeToRight(tab.id) },
+      { type: 'separator' },
+      { label: 'Reopen closed tab', enabled: this.closed.length > 0, click: () => this.reopenClosed() },
+    ];
   }
 
   cycle(step) {
@@ -298,9 +380,12 @@ class Tabs extends EventEmitter {
         nodeIntegration: false,
         webviewTag: false,
         spellcheck: false,
+        // Needed for Chromium's built-in PDF viewer.
+        plugins: true,
       },
     });
     view.setBackgroundColor('#ffffff');
+    view.webContents.setAudioMuted(tab.muted);
     view.webContents.setWebRTCIPHandlingPolicy(tab.tor ? 'disable_non_proxied_udp' : this.getWebRtcPolicy());
     tab.view = view;
     this.wire(tab, view.webContents);
@@ -369,6 +454,10 @@ class Tabs extends EventEmitter {
       update();
     });
     wc.on('media-started-playing', update);
+    wc.on('audio-state-changed', update);
+    wc.on('zoom-changed', (_e, direction) => {
+      wc.setZoomLevel(wc.getZoomLevel() + (direction === 'in' ? 0.5 : -0.5));
+    });
     wc.on('media-paused', update);
 
     wc.on('did-fail-load', (_e, code, description, url, isMainFrame) => {
@@ -404,35 +493,51 @@ class Tabs extends EventEmitter {
   }
 
   contextMenu(tab, wc, p) {
+    Menu.buildFromTemplate(this.contextItems(tab, wc, p)).popup({ window: this.window });
+  }
+
+  contextItems(tab, wc, p) {
     const nav = wc.navigationHistory;
     const items = [];
+    const openInNewTab = (url) => this.create(url, { activate: false, tor: tab.tor });
     if (isWebUrl(p.linkURL)) {
       items.push(
-        { label: 'Open link in new tab', click: () => this.create(p.linkURL, { activate: false, tor: tab.tor }) },
+        { label: 'Open link in new tab', click: () => openInNewTab(p.linkURL) },
+        { label: 'Save link as…', click: () => wc.downloadURL(p.linkURL) },
         { label: 'Copy link address', click: () => clipboard.writeText(p.linkURL) },
         { type: 'separator' },
       );
     }
     if (p.mediaType === 'image' && isWebUrl(p.srcURL)) {
       items.push(
-        { label: 'Open image in new tab', click: () => this.create(p.srcURL, { activate: false, tor: tab.tor }) },
+        { label: 'Open image in new tab', click: () => openInNewTab(p.srcURL) },
         { label: 'Save image as…', click: () => wc.downloadURL(p.srcURL) },
+        { label: 'Copy image', click: () => wc.copyImageAt(p.x, p.y) },
         { type: 'separator' },
       );
     }
     if (p.isEditable) {
-      items.push({ role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }, { type: 'separator' });
+      items.push({ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }, { type: 'separator' });
     } else if (p.selectionText) {
-      items.push({ role: 'copy' }, { type: 'separator' });
+      const text = p.selectionText.trim();
+      const shown = text.length > 30 ? `${text.slice(0, 30)}…` : text;
+      items.push(
+        { role: 'copy' },
+        { label: `Search for "${shown}"`, click: () => this.create(this.getSearchUrl(text), { tor: tab.tor }) },
+        { type: 'separator' },
+      );
     }
     items.push(
       { label: 'Back', enabled: nav.canGoBack(), click: () => nav.goBack() },
       { label: 'Forward', enabled: nav.canGoForward(), click: () => nav.goForward() },
       { label: 'Reload', click: () => wc.reload() },
       { type: 'separator' },
+      { label: 'Save page as…', click: () => this.savePage(tab.id) },
+      { label: 'Print…', click: () => this.print(tab.id) },
+      { type: 'separator' },
       { label: 'Inspect', click: () => wc.inspectElement(p.x, p.y) },
     );
-    Menu.buildFromTemplate(items).popup({ window: this.window });
+    return items;
   }
 
   applyWebRtcPolicy() {
@@ -445,7 +550,7 @@ class Tabs extends EventEmitter {
     const saved = this.tabs.filter((t) => t.url && !t.tor);
     return {
       activeIndex: Math.max(0, saved.findIndex((t) => t.id === this.activeId)),
-      tabs: saved.map((t) => ({ url: t.url, title: t.title })),
+      tabs: saved.map((t) => ({ url: t.url, title: t.title, pinned: t.pinned })),
     };
   }
 

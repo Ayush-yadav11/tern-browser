@@ -6,8 +6,8 @@ const { SEARCH_ENGINES } = require('./url');
 
 const THEMES = ['midnight', 'paper', 'lagoon', 'moss', 'ember'];
 const PROXY_SERVER = /^(?:socks5|socks4|http|https):\/\/[^\s/:@]+:\d{1,5}$/i;
-const TOOLBAR_IDS = ['back', 'forward', 'reload', 'home', 'url', 'star', 'shield', 'library', 'downloads', 'customize'];
-const LOCKED_ITEMS = new Set(['url', 'customize']);
+const TOOLBAR_IDS = ['back', 'forward', 'reload', 'home', 'url', 'star', 'shield', 'library', 'downloads', 'customize', 'menu'];
+const LOCKED_ITEMS = new Set(['url', 'customize', 'menu']);
 const HIDDEN_BY_DEFAULT = new Set(['home']);
 
 const DEFAULTS = {
@@ -20,6 +20,7 @@ const DEFAULTS = {
   saveHistory: true,
   askDownloadPath: false,
   autoUpdate: true,
+  sideCollapse: true,
   proxyEnabled: false,
   proxyServer: '',
   proxyUsername: '',
@@ -51,6 +52,7 @@ function clean(input, base = DEFAULTS) {
   if ('saveHistory' in input) s.saveHistory = Boolean(input.saveHistory);
   if ('askDownloadPath' in input) s.askDownloadPath = Boolean(input.askDownloadPath);
   if ('autoUpdate' in input) s.autoUpdate = Boolean(input.autoUpdate);
+  if ('sideCollapse' in input) s.sideCollapse = Boolean(input.sideCollapse);
   // An unusable server stays switched on and just fails to connect, which never exposes the real IP.
   if ('proxyEnabled' in input) s.proxyEnabled = Boolean(input.proxyEnabled);
   if ('proxyServer' in input) s.proxyServer = PROXY_SERVER.test(input.proxyServer) ? input.proxyServer : '';

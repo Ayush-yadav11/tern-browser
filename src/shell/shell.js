@@ -18,10 +18,15 @@ const ICON = {
   library: '<path d="M3 3v10M6 3v10M9.5 3.5l3.5 9.5"/>',
   downloads: '<path d="M8 2.5v7.5M4.5 7L8 10.5 11.5 7M3 13.5h10"/>',
   edit: '<path d="M3 13l.7-2.8L10.5 3.4l2.1 2.1-6.8 6.8z"/>',
+  menu: '<circle cx="8" cy="3.5" r=".6"/><circle cx="8" cy="8" r=".6"/><circle cx="8" cy="12.5" r=".6"/>',
+  speaker: '<path d="M3 6.5v3h2.2L8.5 12V4L5.2 6.5zM10.5 6a3 3 0 0 1 0 4M12 4.5a5 5 0 0 1 0 7"/>',
+  muted: '<path d="M3 6.5v3h2.2L8.5 12V4L5.2 6.5zM10.5 6.5l3 3M13.5 6.5l-3 3"/>',
+  secure: '<rect x="3.5" y="7" width="9" height="6.5" rx="1.2"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/>',
+  'not-secure': '<path d="M8 2.5l6 10.5H2zM8 6.5v3M8 11.2v.1"/>',
 };
 const svg = (name) => `<svg viewBox="0 0 16 16" aria-hidden="true">${ICON[name]}</svg>`;
-const ITEM_NAMES = { back: 'Back', forward: 'Forward', reload: 'Reload', home: 'New tab page', url: 'Address bar', star: 'Bookmark this page', shield: 'Ad blocker', library: 'Bookmarks and history', downloads: 'Downloads', customize: 'Customize' };
-const LOCKED = new Set(['url', 'customize']);
+const ITEM_NAMES = { back: 'Back', forward: 'Forward', reload: 'Reload', home: 'New tab page', url: 'Address bar', star: 'Bookmark this page', shield: 'Ad blocker', library: 'Bookmarks and history', downloads: 'Downloads', customize: 'Customize', menu: 'Menu' };
+const LOCKED = new Set(['url', 'customize', 'menu']);
 const THEMES = [
   ['midnight', 'Night'],
   ['paper', 'Paper'],
@@ -53,6 +58,11 @@ const openHost = (url) => {
 };
 
 /* Toolbar */
+function set2(id, fn) {
+  const el = $(id);
+  if (el) fn(el);
+}
+
 function buildToolbar(items) {
   const bar = $('toolbar');
   bar.textContent = '';
@@ -62,12 +72,12 @@ function buildToolbar(items) {
       const form = document.createElement('form');
       form.id = 'address';
       form.className = 'no-drag';
-      form.innerHTML = '<input id="address-input" placeholder="Search or enter address" aria-label="Address and search" spellcheck="false" autocomplete="off">';
+      form.innerHTML = '<span id="secure" hidden></span><input id="address-input" placeholder="Search or enter address" aria-label="Address and search" spellcheck="false" autocomplete="off">';
       form.addEventListener('submit', (e) => {
         e.preventDefault();
         go($('address-input').value);
       });
-      const input = form.firstChild;
+      const input = form.querySelector('input');
       input.addEventListener('focus', () => input.select());
       // Clicking the page without pressing Enter puts the real address back.
       input.addEventListener('blur', () => setTimeout(renderToolbar, 200));
@@ -102,6 +112,10 @@ function toolbarAction(id) {
   if (id === 'reload') (tab.loading ? api.stop : api.reload)(tab.id);
   if (id === 'home') api.home(tab.id);
   if (id === 'star') api.toggleBookmark();
+  if (id === 'menu') {
+    const r = $('menu-btn').getBoundingClientRect();
+    api.mainMenu(r.left, r.bottom);
+  }
   if (['shield', 'library', 'downloads', 'customize'].includes(id)) togglePanel(id);
 }
 
@@ -125,6 +139,17 @@ function renderToolbar() {
   const input = $('address-input');
   const editing = document.activeElement === input && document.hasFocus();
   if (input && !editing) input.value = displayUrl(tab);
+  set2('secure', (el) => {
+    const isHttps = tab.url.startsWith('https:');
+    const mark = isHttps ? 'secure' : 'not-secure';
+    el.hidden = !tab.url || Boolean(tab.error);
+    if (el.dataset.mark !== mark) {
+      el.dataset.mark = mark;
+      el.className = mark;
+      el.innerHTML = svg(mark);
+      el.title = isHttps ? 'Connection is encrypted' : "Not secure: this site's connection isn't encrypted";
+    }
+  });
   const set = (id, fn) => {
     const el = $(id);
     if (el) fn(el);
@@ -248,14 +273,23 @@ function makeTab(tab) {
   el.draggable = true;
   el.setAttribute('role', 'tab');
   el.innerHTML = '<span class="tab-icon"></span><span class="tab-title"></span>'
+    + '<button class="tab-audio" hidden></button>'
     + `<button class="tab-close" aria-label="Close tab" title="Close tab">${svg('close')}</button>`;
   el.addEventListener('mousedown', (e) => {
-    if (e.button === 0 && !e.target.closest('.tab-close')) api.activate(tab.id);
+    if (e.button === 0 && !e.target.closest('.tab-close, .tab-audio')) api.activate(tab.id);
   });
   el.addEventListener('auxclick', (e) => {
     if (e.button === 1) api.close(tab.id);
   });
   el.querySelector('.tab-close').addEventListener('click', () => api.close(tab.id));
+  el.querySelector('.tab-audio').addEventListener('click', (e) => {
+    e.stopPropagation();
+    api.toggleMuted(tab.id);
+  });
+  el.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    api.tabMenu(tab.id);
+  });
   el.addEventListener('dragstart', (e) => {
     e.dataTransfer.setData('text/tern-tab', String(tab.id));
     el.classList.add('dragging');
@@ -285,6 +319,16 @@ function renderTabs() {
     el.classList.toggle('loading', tab.loading);
     el.classList.toggle('sleeping', tab.sleeping);
     el.classList.toggle('tor', tab.tor);
+    el.classList.toggle('pinned', tab.pinned);
+    const audio = el.querySelector('.tab-audio');
+    audio.hidden = !tab.audible && !tab.muted;
+    const sound = tab.muted ? 'muted' : 'speaker';
+    if (audio.dataset.mark !== sound) {
+      audio.dataset.mark = sound;
+      audio.innerHTML = svg(sound);
+      audio.title = tab.muted ? 'Unmute this site' : 'Mute this site';
+      audio.setAttribute('aria-label', audio.title);
+    }
     el.setAttribute('aria-selected', String(tab.id === state.activeId));
     const title = tab.title || (tab.url ? openHost(tab.url) : 'New tab');
     el.querySelector('.tab-title').textContent = title;
@@ -369,6 +413,8 @@ function applyAppearance() {
   b.dataset.tabs = s.tabPosition;
   b.dataset.toolbar = s.toolbarPosition;
   b.classList.toggle('compact', s.compact);
+  b.dataset.side = s.tabPosition !== 'top' && s.sideCollapse ? 'auto' : 'fixed';
+  if (b.dataset.side === 'fixed') setSideOpen(false);
   document.documentElement.style.setProperty('--radius', `${s.radius}px`);
   b.style.setProperty('--accent', s.accent || 'var(--theme-accent)');
   if (customStyle.textContent !== s.customCss) customStyle.textContent = s.customCss;
@@ -441,6 +487,7 @@ function renderPanel() {
     $('panel-title').textContent = 'Downloads';
     renderDownloads();
   }
+  watchContent.send();
 }
 
 /* Small helpers for the list panels. Page titles and addresses only ever go in as text. */
@@ -499,6 +546,7 @@ function renderBookmarksBar() {
   const shortcuts = $('newtab-shortcuts');
   shortcuts.textContent = '';
   shortcuts.append(...bookmarks.slice(0, 8).map(bookmarkChip));
+  watchContent.send?.();
 }
 
 function renderLibrary() {
@@ -737,6 +785,7 @@ function renderCustomize() {
   $('save-history').checked = s.saveHistory;
   $('ask-download').checked = s.askDownloadPath;
   $('auto-update').checked = s.autoUpdate;
+  $('side-collapse').checked = s.sideCollapse;
   $('update-status').textContent = updateStatus(state.update);
   $('update-check').hidden = ['off', 'checking', 'downloading', 'ready'].includes(state.update.status);
   $('auto-update').disabled = state.update.status === 'off';
@@ -841,6 +890,25 @@ function wirePanel() {
   $('auto-update').addEventListener('change', (e) => api.setSettings({ autoUpdate: e.target.checked }));
   $('update-check').addEventListener('click', () => api.checkForUpdate());
   $('tor-open').addEventListener('click', () => api.newTorTab());
+  $('side-collapse').addEventListener('change', (e) => api.setSettings({ sideCollapse: e.target.checked }));
+  const clearData = $('clear-data');
+  let clearDataTimer = null;
+  clearData.addEventListener('click', async () => {
+    if (!clearDataTimer) {
+      clearData.textContent = 'Click again to clear history, cookies and cache';
+      $('clear-data-status').textContent = '';
+      clearDataTimer = setTimeout(() => {
+        clearDataTimer = null;
+        clearData.textContent = 'Clear browsing data';
+      }, 4000);
+      return;
+    }
+    clearTimeout(clearDataTimer);
+    clearDataTimer = null;
+    clearData.textContent = 'Clear browsing data';
+    await api.clearBrowsingData();
+    $('clear-data-status').textContent = 'Cleared. Sites will have signed you out.';
+  });
   const saveProxy = async () => {
     const result = await api.setProxy({
       enabled: $('proxy-enabled').checked,
@@ -893,12 +961,47 @@ function wirePanel() {
   $('shield-global').addEventListener('change', (e) => api.setSettings({ adblock: e.target.checked }));
 }
 
+/* Side tabs expanding on hover. The page is a separate native view, so the whole interface
+   is lifted above it with its middle transparent, and lowered again afterwards. */
+let sideOpen = false;
+let sideTimer = null;
+const SIDE_OPEN_DELAY_MS = 120;
+const SIDE_CLOSE_DELAY_MS = 250;
+const SIDE_ANIMATION_MS = 130;
+
+async function setSideOpen(open) {
+  clearTimeout(sideTimer);
+  if (sideOpen === open) return;
+  sideOpen = open;
+  if (open) {
+    await api.setSideOpen(true);
+    if (sideOpen) document.body.classList.add('side-open');
+  } else {
+    document.body.classList.remove('side-open');
+    sideTimer = setTimeout(() => api.setSideOpen(false), SIDE_ANIMATION_MS);
+  }
+}
+
+function wireSideTabs() {
+  const strip = $('tabs');
+  const later = (open, delay) => {
+    clearTimeout(sideTimer);
+    if (document.body.dataset.side !== 'auto') return;
+    sideTimer = setTimeout(() => setSideOpen(open), delay);
+  };
+  strip.addEventListener('mouseenter', () => later(true, SIDE_OPEN_DELAY_MS));
+  strip.addEventListener('mouseleave', () => later(false, SIDE_CLOSE_DELAY_MS));
+  strip.addEventListener('focusin', () => later(true, 0));
+  strip.addEventListener('focusout', () => later(false, SIDE_CLOSE_DELAY_MS));
+}
+
 /* Find in page */
 function wireFind() {
   const input = $('find-input');
   const close = () => {
     $('findbar').hidden = true;
     $('find-count').textContent = '';
+    watchContent.send();
     api.findStop();
     api.focusPage();
   };
@@ -916,6 +1019,7 @@ function wireFind() {
   $('find-close').addEventListener('click', close);
   api.onFindOpen(() => {
     $('findbar').hidden = false;
+    watchContent.send();
     input.focus();
     input.select();
   });
@@ -952,6 +1056,7 @@ function render() {
 
 wirePanel();
 wireFind();
+wireSideTabs();
 watchContent();
 $('new-tab').addEventListener('click', () => api.newTab());
 $('new-tor-tab').addEventListener('click', () => api.newTorTab());

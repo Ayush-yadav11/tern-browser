@@ -104,6 +104,8 @@ to `THEMES` in both `src/shell/shell.js` and `src/main/settings.js`.
 | Ctrl+1 to Ctrl+9 | Jump to a tab |
 | Ctrl+L | Address bar |
 | Ctrl+F | Find in page |
+| Ctrl+P / Ctrl+S | Print / save page |
+| Ctrl+PageDown / Ctrl+PageUp | Next / previous tab |
 | Ctrl+D | Bookmark this page, or remove the bookmark |
 | Ctrl+Shift+B | Show or hide the bookmarks bar |
 | Ctrl+Shift+O / Ctrl+H / Ctrl+J | Bookmarks / history / downloads |
@@ -114,7 +116,8 @@ to `THEMES` in both `src/shell/shell.js` and `src/main/settings.js`.
 
 ## Known limits
 
-- No sync or password manager yet.
+- No sync or password manager yet, and only one window at a time.
+- Tern can't be set as the default browser yet, and there's no spell check.
 - Bookmarks have no folders yet, and can't be imported from another browser.
 - History keeps the last 90 days, up to 5,000 pages. There's no private window yet.
 - Downloads can't be picked up again after Tern is closed.

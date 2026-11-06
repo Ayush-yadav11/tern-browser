@@ -223,3 +223,45 @@ body.in-tor #newtab-input:focus { border-color: var(--tor); }
 #proxy-status, #check-ip-result { margin: 4px 0 8px; }
 #proxy-status:empty, #check-ip-result:empty { display: none; }
 #proxy-status.bad { color: var(--text); font-weight: 600; }
+
+/* Side tabs that expand on hover. The column stays narrow, so the page never moves. */
+body[data-side="auto"][data-tabs="left"] { --cols: 44px minmax(0,1fr); }
+body[data-side="auto"][data-tabs="right"] { --cols: minmax(0,1fr) 44px; }
+body:not([data-tabs="top"]) #tabs { -webkit-app-region: no-drag; }
+body[data-side="auto"] #tabs {
+  position: relative; z-index: 3; width: 44px; overflow-x: hidden; background: var(--bar-bg);
+  transition: width .12s cubic-bezier(.2, .8, .2, 1);
+}
+body[data-side="auto"][data-tabs="left"] #tabs { justify-self: start; }
+body[data-side="auto"][data-tabs="right"] #tabs { justify-self: end; }
+body[data-side="auto"].side-open #tabs { width: 220px; box-shadow: 0 0 16px rgba(0, 0, 0, .35); }
+@media (prefers-reduced-motion: reduce) { body[data-side="auto"] #tabs { transition: none; } }
+body.side-open, body.side-open #main, body.side-open #content { background: transparent; }
+html:has(body.side-open) { background: transparent; }
+body[data-side="auto"]:not(.side-open) .tab { justify-content: center; padding: 0; }
+body[data-side="auto"]:not(.side-open) .tab-title,
+body[data-side="auto"]:not(.side-open) .tab-close,
+body[data-side="auto"]:not(.side-open) .tab-audio { display: none; }
+body[data-side="auto"]:not(.side-open) #new-tab,
+body[data-side="auto"]:not(.side-open) #new-tor-tab { justify-content: center; padding-left: 0; }
+
+/* Many tabs along the top scroll rather than falling off the end. */
+body[data-tabs="top"] #tablist { overflow-x: auto; }
+body[data-tabs="top"] #tablist::-webkit-scrollbar { display: none; }
+
+/* Pinned and playing tabs */
+body[data-tabs="top"] .tab.pinned { width: 34px; flex: none; justify-content: center; padding: 0; }
+body[data-tabs="top"] .tab.pinned .tab-title { display: none; }
+.tab.pinned .tab-close { display: none; }
+.tab-audio { flex: none; width: 20px; height: 20px; padding: 2px; border-radius: 4px; display: grid; place-items: center; }
+.tab-audio svg { width: 14px; height: 14px; }
+.tab-audio:hover { background: var(--hover); }
+
+/* Address bar security mark */
+#address { position: relative; }
+#address input { padding-left: 30px; }
+#secure { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); width: 15px; height: 15px; color: var(--muted); display: grid; place-items: center; }
+#secure svg { width: 14px; height: 14px; }
+#secure.not-secure { color: #e5534b; }
+#clear-data-status:empty { display: none; }
+#clear-data-status { margin: 4px 0 8px; }

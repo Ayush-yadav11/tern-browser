@@ -103,7 +103,8 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
       spellcheck: false,
     },
   });
-  shellView.setBackgroundColor('#14161a');
+  // Transparent so the page shows through while expanded side tabs are lifted above it.
+  shellView.setBackgroundColor('#00000000');
   win.contentView.addChildView(shellView);
   const shell = shellView.webContents;
   const layoutShell = () => {
@@ -188,6 +189,11 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
       'a+arrowleft': () => tabs.back(id),
       'a+arrowright': () => tabs.forward(id),
       'c+f': () => send('tern:find-open'),
+      'c+p': () => tabs.print(id),
+      'c+s': () => tabs.savePage(id),
+      'c+pagedown': () => tabs.cycle(1),
+      'c+pageup': () => tabs.cycle(-1),
+      'cs+i': () => tabs.active?.view?.webContents.toggleDevTools(),
       'c+d': () => toggleBookmark(),
       'cs+b': () => update({ bookmarksBar: !settings.bookmarksBar }),
       'cs+o': () => send('tern:open-panel', { panel: 'library', tab: 'bookmarks' }),
@@ -222,6 +228,7 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     onShortcut: shortcut,
     getSleepMinutes: () => settings.sleepMinutes,
     getWebRtcPolicy: () => (settings.proxyEnabled ? 'disable_non_proxied_udp' : 'default_public_interface_only'),
+    getSearchUrl: (text) => SEARCH_ENGINES[settings.searchEngine].url + encodeURIComponent(text),
   });
 
   let blockedSinceSave = 0;
@@ -413,9 +420,12 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     return [first, ...matches];
   };
   // Tabs brought in while the list is open would otherwise cover it.
-  tabs.on('attached', () => {
+  let sideOpen = false;
+  const raiseOverlays = () => {
+    if (sideOpen) win.contentView.addChildView(shellView);
     if (suggestView && win.contentView.children.includes(suggestView)) win.contentView.addChildView(suggestView);
-  });
+  };
+  tabs.on('attached', raiseOverlays);
 
   tabs.on('changed', () => {
     pushState();
@@ -431,6 +441,44 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     focusAddress();
   });
 
+  const mainMenuItems = () => {
+    const id = tabs.activeId;
+    const tab = tabs.active;
+    const hasPage = Boolean(tab?.view);
+    const shortcut = (accelerator) => ({ accelerator, registerAccelerator: false });
+    const panel = (name, tabName) => () => send('tern:open-panel', { panel: name, tab: tabName });
+    return [
+      { label: 'New tab', ...shortcut('Ctrl+T'), click: () => { tabs.create(); focusAddress(); } },
+      { label: 'New Tor tab', ...shortcut('Ctrl+Shift+N'), click: openTorTab },
+      { label: 'Reopen closed tab', ...shortcut('Ctrl+Shift+T'), enabled: tabs.closed.length > 0, click: () => tabs.reopenClosed() },
+      { type: 'separator' },
+      { label: 'Bookmarks', ...shortcut('Ctrl+Shift+O'), click: panel('library', 'bookmarks') },
+      { label: 'History', ...shortcut('Ctrl+H'), click: panel('library', 'history') },
+      { label: 'Downloads', ...shortcut('Ctrl+J'), click: panel('downloads') },
+      { type: 'separator' },
+      { label: 'Zoom in', ...shortcut('Ctrl+='), enabled: hasPage, click: () => tabs.zoom(0.5) },
+      { label: `Reset zoom (${tabs.zoomPercent()}%)`, ...shortcut('Ctrl+0'), enabled: hasPage, click: () => tabs.zoom(0) },
+      { label: 'Zoom out', ...shortcut('Ctrl+-'), enabled: hasPage, click: () => tabs.zoom(-0.5) },
+      { label: 'Full screen', ...shortcut('F11'), click: () => win.setFullScreen(!win.isFullScreen()) },
+      { type: 'separator' },
+      { label: 'Find in page', ...shortcut('Ctrl+F'), enabled: hasPage, click: () => send('tern:find-open') },
+      { label: 'Print…', ...shortcut('Ctrl+P'), enabled: hasPage, click: () => tabs.print(id) },
+      { label: 'Save page as…', ...shortcut('Ctrl+S'), enabled: hasPage, click: () => tabs.savePage(id) },
+      { type: 'separator' },
+      { label: 'Customize', click: panel('customize') },
+      {
+        label: 'About Tern',
+        click: () => dialog.showMessageBox(win, {
+          type: 'info',
+          message: `Tern ${app.getVersion()}`,
+          detail: `Chromium ${process.versions.chrome}\nElectron ${process.versions.electron}`,
+        }),
+      },
+      { type: 'separator' },
+      { label: 'Exit', click: () => win.close() },
+    ];
+  };
+
   const fromShell = (handler) => (event, ...args) => {
     if (event.sender !== shell) throw new Error('Rejected IPC from outside the browser UI');
     return handler(...args);
@@ -440,6 +488,27 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
       pushState();
       pushBookmarks();
       pushDownloads();
+    },
+    'tern:side-open': (open) => {
+      sideOpen = Boolean(open);
+      // Reordering views can move keyboard focus, and hovering shouldn't interrupt typing.
+      const page = tabs.active?.view;
+      const pageHadFocus = Boolean(page?.webContents.isFocused());
+      if (sideOpen) win.contentView.addChildView(shellView);
+      else if (page && win.contentView.children.includes(page)) win.contentView.addChildView(page);
+      raiseOverlays();
+      if (pageHadFocus) page.webContents.focus();
+    },
+    'tern:main-menu': (x, y) => {
+      Menu.buildFromTemplate(mainMenuItems()).popup({ window: win, x: Math.round(Number(x) || 0), y: Math.round(Number(y) || 0) });
+    },
+    'tern:tab-menu': (id) => tabs.tabMenu(id),
+    'tern:toggle-muted': (id) => tabs.toggleMuted(id),
+    // Clears normal tabs only. Bookmarks, settings and Tor tabs aren't touched.
+    'tern:clear-browsing-data': async () => {
+      library.clearHistory();
+      await tabSession.clearStorageData();
+      await tabSession.clearCache();
     },
     'tern:new-tor-tab': () => openTorTab(),
     'tern:tor-retry': () => tor.start(),
@@ -505,7 +574,10 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
       tabs.create();
       focusAddress();
     },
-    'tern:activate': (id) => tabs.activate(id),
+    'tern:activate': (id) => {
+      tabs.activate(id);
+      tabs.active?.view?.webContents.focus();
+    },
     'tern:close': (id) => tabs.close(id),
     'tern:move': (id, index) => tabs.move(id, index),
     'tern:navigate': (id, input) => {
@@ -526,7 +598,6 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
       if (hex.test(color) && hex.test(symbolColor) && !win.isDestroyed()) {
         win.setTitleBarOverlay({ color, symbolColor, height: Math.max(28, Math.min(48, Number(height) || 40)) });
         win.setBackgroundColor(color);
-        shellView.setBackgroundColor(color);
       }
     },
     'tern:settings': (patch) => {
@@ -636,7 +707,7 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
   const previous = sessionFile.read();
   const restored = Array.isArray(previous?.tabs) ? previous.tabs.filter((t) => isWebUrl(t?.url)) : [];
   if (restored.length) {
-    restored.forEach((t) => tabs.create(t.url, { activate: false, title: String(t.title ?? '') }));
+    restored.forEach((t) => tabs.create(t.url, { activate: false, title: String(t.title ?? ''), pinned: Boolean(t.pinned) }));
     tabs.activate(tabs.tabs[Math.min(previous.activeIndex ?? 0, restored.length - 1)]?.id ?? tabs.tabs[0].id);
   }
   if (openUrl) tabs.create(openUrl);
@@ -658,6 +729,7 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     library,
     downloads,
     updater,
+    mainMenuItems,
     tor,
     torSession,
     useTorPort,
