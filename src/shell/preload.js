@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld('tern', {
   findStop: invoke('tern:find-stop'),
   focusPage: invoke('tern:focus-page'),
   open: invoke('tern:open'),
+  runAction: invoke('tern:run-action'),
+  onPaletteOpen: listen('tern:palette-open'),
   setSideOpen: invoke('tern:side-open'),
   mainMenu: invoke('tern:main-menu'),
   tabMenu: invoke('tern:tab-menu'),

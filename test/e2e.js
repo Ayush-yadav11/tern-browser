@@ -346,6 +346,70 @@ async function main() {
     await sleep(400);
   });
 
+  await check('command palette: Ctrl+K opens it above the page, Esc closes it and returns to the page', async () => {
+    wc().focus();
+    await waitFor(() => wc().isFocused(), 2000);
+    wc().sendInputEvent({ type: 'keyDown', keyCode: 'k', modifiers: ['control'] });
+    wc().sendInputEvent({ type: 'keyUp', keyCode: 'k', modifiers: ['control'] });
+    await waitFor(() => inShell(() => !document.getElementById('palette').hidden && document.activeElement.id === 'palette-input'), 3000);
+    await waitFor(() => win.contentView.children.at(-1).webContents === shell, 2000);
+    assert.ok(await inShell(() => document.querySelectorAll('#palette-list li').length > 5));
+    await shot(shell, '22-palette');
+    await inShell(() => document.getElementById('palette-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
+    await waitFor(() => inShell(() => document.getElementById('palette').hidden), 2000);
+    await waitFor(() => win.contentView.children.at(-1) === tab.view, 2000);
+    assert.equal(await inShell(() => document.body.classList.contains('lifted')), false);
+    await waitFor(() => wc().isFocused(), 2000);
+  });
+
+  const typePalette = async (text) => {
+    await shellEval('openPalette()');
+    await shellEval(`(() => {
+      const input = document.getElementById('palette-input');
+      input.value = ${JSON.stringify(text)};
+      input.dispatchEvent(new Event('input'));
+    })()`);
+    await sleep(150);
+  };
+  const paletteRows = () => shellEval("paletteItems.map((i) => `${i.kind}: ${i.main}`)");
+  const pressEnter = () => inShell(() => document.getElementById('palette-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })));
+
+  await check('command palette: finds and switches to an open tab', async () => {
+    const other = tabs.create(`${base}/palette-target`, { activate: false, title: 'Findable Tab Title' });
+    await sleep(100);
+    await typePalette('findable');
+    assert.equal((await paletteRows())[0], 'Tab: Findable Tab Title');
+    await pressEnter();
+    await waitFor(() => tabs.activeId === other.id, 2000);
+    tabs.close(other.id);
+    tabs.activate(tab.id);
+  });
+
+  await check('command palette: runs actions, with the arrow keys choosing', async () => {
+    await typePalette('theme ember');
+    assert.equal((await paletteRows())[0], 'Action: Theme: Ember');
+    await pressEnter();
+    await waitFor(() => b.getSettings().theme === 'ember', 2000);
+    await typePalette('theme');
+    await inShell(() => document.getElementById('palette-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' })));
+    assert.equal(await shellEval('paletteIndex'), 1);
+    await inShell(() => document.getElementById('palette-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
+    b.updateSettings({ theme: 'midnight' });
+  });
+
+  await check('command palette: unknown text can be opened or searched, and page titles stay plain text', async () => {
+    const odd = tabs.create(`${base}/odd`, { activate: false, title: '<img src=x onerror=window.hacked=1>' });
+    await sleep(100);
+    await typePalette('onerror');
+    assert.equal(await inShell(() => document.querySelector('#palette-list img')), null);
+    assert.equal(await inShell(() => window.hacked), undefined);
+    const rows = await paletteRows();
+    assert.equal(rows.at(-1), 'Go: onerror');
+    await inShell(() => document.getElementById('palette-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
+    tabs.close(odd.id);
+    tabs.activate(tab.id);
+  });
+
   await check('tabs: pin keeps a tab first, and duplicate, close others and close right work', async () => {
     const a = tabs.create(`${base}/a`, { activate: false });
     const c = tabs.create(`${base}/c`, { activate: false });

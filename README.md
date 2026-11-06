@@ -103,6 +103,7 @@ to `THEMES` in both `src/shell/shell.js` and `src/main/settings.js`.
 | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous tab |
 | Ctrl+1 to Ctrl+9 | Jump to a tab |
 | Ctrl+L | Address bar |
+| Ctrl+K | Command palette: tabs, bookmarks, history and actions |
 | Ctrl+F | Find in page |
 | Ctrl+P / Ctrl+S | Print / save page |
 | Ctrl+PageDown / Ctrl+PageUp | Next / previous tab |

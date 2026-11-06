@@ -969,16 +969,25 @@ const SIDE_OPEN_DELAY_MS = 120;
 const SIDE_CLOSE_DELAY_MS = 250;
 const SIDE_ANIMATION_MS = 130;
 
+// Anything drawn over the page lifts the interface, and it's lowered once nothing needs it.
+const lifts = new Set();
+function setLift(reason, on) {
+  if (on) lifts.add(reason);
+  else lifts.delete(reason);
+  document.body.classList.toggle('lifted', lifts.size > 0);
+  return api.setSideOpen(lifts.size > 0);
+}
+
 async function setSideOpen(open) {
   clearTimeout(sideTimer);
   if (sideOpen === open) return;
   sideOpen = open;
   if (open) {
-    await api.setSideOpen(true);
+    await setLift('side', true);
     if (sideOpen) document.body.classList.add('side-open');
   } else {
     document.body.classList.remove('side-open');
-    sideTimer = setTimeout(() => api.setSideOpen(false), SIDE_ANIMATION_MS);
+    sideTimer = setTimeout(() => setLift('side', false), SIDE_ANIMATION_MS);
   }
 }
 
@@ -993,6 +1002,174 @@ function wireSideTabs() {
   strip.addEventListener('mouseleave', () => later(false, SIDE_CLOSE_DELAY_MS));
   strip.addEventListener('focusin', () => later(true, 0));
   strip.addEventListener('focusout', () => later(false, SIDE_CLOSE_DELAY_MS));
+}
+
+/* Command palette */
+const PALETTE_THEMES = THEMES.map(([id, label]) => [`Theme: ${label}`, () => api.setSettings({ theme: id, accent: '' })]);
+const PALETTE_ACTIONS = [
+  ['New tab', () => api.newTab()],
+  ['New Tor tab', () => api.newTorTab()],
+  ['Reopen closed tab', () => api.runAction('reopen')],
+  ['Duplicate tab', () => api.runAction('duplicate')],
+  ['Pin or unpin tab', () => api.runAction('pin')],
+  ['Mute or unmute tab', () => api.runAction('mute')],
+  ['Close other tabs', () => api.runAction('closeOthers')],
+  ['Close tab', () => api.close(state.activeId)],
+  ['Bookmark this page', () => api.toggleBookmark()],
+  ['Show bookmarks', () => showPanel('library', 'bookmarks')],
+  ['Show history', () => showPanel('library', 'history')],
+  ['Show downloads', () => showPanel('downloads')],
+  ['Show ad blocker', () => showPanel('shield')],
+  ['Customize', () => showPanel('customize')],
+  ['Find in page', () => { $('findbar').hidden = false; watchContent.send(); $('find-input').focus(); }],
+  ['Print', () => api.runAction('print')],
+  ['Save page', () => api.runAction('save')],
+  ['Zoom in', () => api.runAction('zoomIn')],
+  ['Zoom out', () => api.runAction('zoomOut')],
+  ['Reset zoom', () => api.runAction('zoomReset')],
+  ['Full screen', () => api.runAction('fullscreen')],
+  ['Developer tools', () => api.runAction('devtools')],
+  ['Tabs on top', () => api.setSettings({ tabPosition: 'top' })],
+  ['Tabs on left', () => api.setSettings({ tabPosition: 'left' })],
+  ['Tabs on right', () => api.setSettings({ tabPosition: 'right' })],
+  ['Address bar on top', () => api.setSettings({ toolbarPosition: 'top' })],
+  ['Address bar on bottom', () => api.setSettings({ toolbarPosition: 'bottom' })],
+  ['Compact mode on or off', () => api.setSettings({ compact: !state.settings.compact })],
+  ['Exit Tern', () => api.runAction('exit')],
+  ...PALETTE_THEMES,
+];
+const PALETTE_LIMIT = 40;
+let paletteItems = [];
+let paletteIndex = 0;
+let paletteToken = 0;
+
+// Best match first: the start of a word beats the middle of one. Null means no match.
+function paletteScore(text, words) {
+  const lower = text.toLowerCase();
+  let score = 0;
+  for (const word of words) {
+    const at = lower.indexOf(word);
+    if (at < 0) return null;
+    score += at === 0 ? 3 : /\W/.test(lower[at - 1]) ? 2 : 1;
+  }
+  return score;
+}
+
+function paletteRow(kind, main, sub, run, boost = 0) {
+  return { kind, main, sub, run, boost };
+}
+
+async function updatePalette() {
+  const token = ++paletteToken;
+  const query = $('palette-input').value.trim();
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const tabs = state.tabs.filter((t) => t.id !== state.activeId).map((t) => paletteRow(
+    t.tor ? 'Tor tab' : 'Tab',
+    t.title || (t.url ? openHost(t.url) : 'New tab'),
+    t.url ? openHost(t.url) : '',
+    () => api.activate(t.id),
+    2,
+  ));
+  const actions = PALETTE_ACTIONS.map(([label, run]) => paletteRow('Action', label, '', run));
+  const marks = bookmarks.map((b) => paletteRow('Bookmark', b.title || openHost(b.url), openHost(b.url), () => api.open(b.url, {}), 1));
+  let rows;
+  if (!words.length) {
+    rows = [...tabs, ...actions];
+  } else {
+    const history = (await api.searchHistory(query)).slice(0, 12)
+      .map((h) => paletteRow('History', h.title || openHost(h.url), openHost(h.url), () => api.open(h.url, {})));
+    if (token !== paletteToken) return;
+    const seen = new Set();
+    rows = [...tabs, ...marks, ...actions, ...history]
+      .map((row) => ({ row, score: paletteScore(`${row.main} ${row.sub}`, words) }))
+      .filter(({ score }) => score !== null)
+      .sort((a, b) => (b.score + b.row.boost) - (a.score + a.row.boost))
+      .map(({ row }) => row)
+      .filter((row) => {
+        const key = `${row.main}|${row.sub}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    rows.push(paletteRow('Go', query, 'Open or search', () => api.navigate(state.activeId, query)));
+  }
+  paletteItems = rows.slice(0, PALETTE_LIMIT);
+  paletteIndex = 0;
+  renderPalette();
+}
+
+function renderPalette() {
+  const list = $('palette-list');
+  list.textContent = '';
+  paletteItems.forEach((item, index) => {
+    const row = make('li');
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', String(index === paletteIndex));
+    row.classList.toggle('on', index === paletteIndex);
+    row.append(make('span', 'p-kind', item.kind), make('span', 'p-main', item.main));
+    if (item.sub) row.append(make('span', 'p-sub', item.sub));
+    row.addEventListener('mousemove', (e) => {
+      // Rows appearing under a resting pointer shouldn't change what Enter picks.
+      if (paletteIndex === index || (!e.movementX && !e.movementY)) return;
+      paletteIndex = index;
+      markPaletteRow();
+    });
+    row.addEventListener('click', () => runPaletteItem(index));
+    list.append(row);
+  });
+}
+
+function markPaletteRow() {
+  [...$('palette-list').children].forEach((row, index) => {
+    row.classList.toggle('on', index === paletteIndex);
+    row.setAttribute('aria-selected', String(index === paletteIndex));
+    if (index === paletteIndex) row.scrollIntoView({ block: 'nearest' });
+  });
+}
+
+async function openPalette() {
+  $('palette').hidden = false;
+  $('palette-input').value = '';
+  await setLift('palette', true);
+  $('palette-input').focus();
+  updatePalette();
+}
+
+function closePalette({ focusPage = true } = {}) {
+  if ($('palette').hidden) return;
+  $('palette').hidden = true;
+  setLift('palette', false);
+  if (focusPage) api.focusPage();
+}
+
+function runPaletteItem(index) {
+  const item = paletteItems[index];
+  if (!item) return;
+  closePalette({ focusPage: false });
+  item.run();
+}
+
+function wirePalette() {
+  const input = $('palette-input');
+  input.addEventListener('input', updatePalette);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closePalette();
+    if (e.key === 'Enter') runPaletteItem(paletteIndex);
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!paletteItems.length) return;
+      const step = e.key === 'ArrowDown' ? 1 : -1;
+      paletteIndex = (paletteIndex + step + paletteItems.length) % paletteItems.length;
+      markPaletteRow();
+    }
+  });
+  $('palette').addEventListener('mousedown', (e) => {
+    if (e.target === $('palette')) closePalette();
+  });
+  api.onPaletteOpen(() => {
+    if ($('palette').hidden) openPalette();
+    else closePalette();
+  });
 }
 
 /* Find in page */
@@ -1057,6 +1234,7 @@ function render() {
 wirePanel();
 wireFind();
 wireSideTabs();
+wirePalette();
 watchContent();
 $('new-tab').addEventListener('click', () => api.newTab());
 $('new-tor-tab').addEventListener('click', () => api.newTorTab());

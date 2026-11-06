@@ -189,6 +189,10 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
       'a+arrowleft': () => tabs.back(id),
       'a+arrowright': () => tabs.forward(id),
       'c+f': () => send('tern:find-open'),
+      'c+k': () => {
+        shell.focus();
+        send('tern:palette-open');
+      },
       'c+p': () => tabs.print(id),
       'c+s': () => tabs.savePage(id),
       'c+pagedown': () => tabs.cycle(1),
@@ -461,6 +465,7 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
       { label: 'Zoom out', ...shortcut('Ctrl+-'), enabled: hasPage, click: () => tabs.zoom(-0.5) },
       { label: 'Full screen', ...shortcut('F11'), click: () => win.setFullScreen(!win.isFullScreen()) },
       { type: 'separator' },
+      { label: 'Command palette', ...shortcut('Ctrl+K'), click: () => { shell.focus(); send('tern:palette-open'); } },
       { label: 'Find in page', ...shortcut('Ctrl+F'), enabled: hasPage, click: () => send('tern:find-open') },
       { label: 'Print…', ...shortcut('Ctrl+P'), enabled: hasPage, click: () => tabs.print(id) },
       { label: 'Save page as…', ...shortcut('Ctrl+S'), enabled: hasPage, click: () => tabs.savePage(id) },
@@ -498,6 +503,26 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
       else if (page && win.contentView.children.includes(page)) win.contentView.addChildView(page);
       raiseOverlays();
       if (pageHadFocus) page.webContents.focus();
+    },
+    // Things the palette can do that the interface can't do by itself.
+    'tern:run-action': (name) => {
+      const id = tabs.activeId;
+      const actions = {
+        print: () => tabs.print(id),
+        save: () => tabs.savePage(id),
+        zoomIn: () => tabs.zoom(0.5),
+        zoomOut: () => tabs.zoom(-0.5),
+        zoomReset: () => tabs.zoom(0),
+        fullscreen: () => win.setFullScreen(!win.isFullScreen()),
+        reopen: () => tabs.reopenClosed(),
+        devtools: () => tabs.active?.view?.webContents.toggleDevTools(),
+        closeOthers: () => tabs.closeOthers(id),
+        pin: () => tabs.togglePinned(id),
+        mute: () => tabs.toggleMuted(id),
+        duplicate: () => tabs.duplicate(id),
+        exit: () => win.close(),
+      };
+      actions[name]?.();
     },
     'tern:main-menu': (x, y) => {
       Menu.buildFromTemplate(mainMenuItems()).popup({ window: win, x: Math.round(Number(x) || 0), y: Math.round(Number(y) || 0) });
