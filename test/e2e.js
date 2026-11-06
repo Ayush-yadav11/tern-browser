@@ -42,6 +42,9 @@ function serve() {
     if (req.url.startsWith('/ok.gif')) {
       res.writeHead(200, { 'content-type': 'image/png' });
       res.end(PNG);
+    } else if (req.url.startsWith('/send-to-http')) {
+      res.writeHead(302, { location: 'http://upgrade-me.example/after-redirect' });
+      res.end();
     } else if (req.url.startsWith('/doc.pdf')) {
       const pdf = '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF';
       res.writeHead(200, { 'content-type': 'application/pdf' });
@@ -128,6 +131,8 @@ const waitFor = async (fn, ms = 15000) => {
 async function main() {
   fs.mkdirSync(OUT, { recursive: true });
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'tern-test-'));
+  // The local test site is plain http. HTTPS-only mode gets its own checks below.
+  fs.writeFileSync(path.join(profile, 'settings.json'), JSON.stringify({ httpsOnly: false }));
   const downloadDir = path.join(profile, 'my-downloads');
   app.setPath('downloads', downloadDir);
   const t0 = Date.now();
@@ -138,6 +143,8 @@ async function main() {
   const { tabs, shell, win } = b;
   const shellEval = (code) => shell.executeJavaScript(code, true);
   const inShell = (fn) => shellEval(`(${fn})()`);
+  const directHits = [];
+  server.on('request', (req) => directHits.push(req.url));
   const shot = async (wc, name) => {
     await sleep(400);
     // Windows can't capture while the screen is locked or off. That says nothing about the browser.
@@ -410,6 +417,110 @@ async function main() {
     tabs.activate(tab.id);
   });
 
+  await check('HTTPS-only: addresses, links and redirects all move to https', async () => {
+    const asked = [];
+    b.tabSession.protocol.handle('https', (request) => {
+      asked.push(request.url);
+      return new Response('<!doctype html><title>secure</title><a id="plain" href="http://upgrade-me.example/link">x</a>', { headers: { 'content-type': 'text/html' } });
+    });
+    b.updateSettings({ httpsOnly: true });
+    try {
+      tabs.navigate(tab.id, 'http://upgrade-me.example/typed');
+      await waitFor(() => tab.url === 'https://upgrade-me.example/typed' && !tab.loading, 5000);
+      await wc().executeJavaScript("document.getElementById('plain').click(); 0", true);
+      await waitFor(() => tab.url === 'https://upgrade-me.example/link' && !tab.loading, 5000);
+      tabs.navigate(tab.id, `http://127.0.0.1:${server.address().port}/send-to-http`);
+      await waitFor(() => tab.url === 'https://upgrade-me.example/after-redirect' && !tab.loading, 5000);
+      const fresh = tabs.create('http://upgrade-me.example/new-tab');
+      assert.equal(fresh.url, 'https://upgrade-me.example/new-tab', 'new and restored tabs too');
+      tabs.close(fresh.id);
+      tabs.activate(tab.id);
+      assert.ok(asked.includes('https://upgrade-me.example/link'));
+    } finally {
+      b.tabSession.protocol.unhandle('https');
+    }
+  });
+
+  await check('HTTPS-only: local addresses are left alone', async () => {
+    const { isLocalHost } = require('../src/main/url');
+    for (const host of ['localhost', '192.168.1.1', 'nas', 'printer.local', 'abc.onion', '[::1]']) assert.equal(isLocalHost(host), true, host);
+    for (const host of ['example.com', 'a.b.example.org']) assert.equal(isLocalHost(host), false, host);
+    await load(`http://127.0.0.1:${server.address().port}/ads?local=1`);
+    assert.ok(tab.url.startsWith('http://127.0.0.1'));
+  });
+
+  await check('HTTPS-only: a site without https asks first, sends nothing, and remembers your choice', async () => {
+    const hitsBefore = directHits.length;
+    const httpUrl = `${base}/no-https-here`;
+    tabs.navigate(tab.id, httpUrl);
+    await waitFor(() => tab.error?.noHttps, 8000);
+    assert.equal(tab.error.url, httpUrl);
+    assert.ok(!directHits.slice(hitsBefore).includes('/no-https-here'), 'no unencrypted request was made');
+    await waitFor(() => inShell(() => !document.getElementById('message-http').hidden), 2000);
+    assert.ok(!win.contentView.children.includes(tab.view), 'old page hidden');
+    await shot(shell, '24-no-https');
+    await inShell(() => document.getElementById('message-http').click());
+    await waitFor(() => tab.url === httpUrl && !tab.error && !tab.loading, 5000);
+    assert.ok(directHits.includes('/no-https-here'));
+    await load(`${base}/same-site-later`);
+    assert.ok(tab.url.startsWith('http://'), 'not asked twice for this site');
+    assert.ok(tabs.httpAllowed.has(`false|${TEST_HOST}`));
+    tabs.httpAllowed.clear();
+  });
+
+  await check('HTTPS-only: sites that bounce back to http do not loop', async () => {
+    let served = 0;
+    b.tabSession.protocol.handle('https', () => {
+      served += 1;
+      return new Response('', { status: 302, headers: { location: 'http://bounce.example/' } });
+    });
+    try {
+      tabs.navigate(tab.id, 'http://bounce.example/');
+      await waitFor(() => tab.error?.noHttps, 5000);
+      await sleep(500);
+      assert.ok(served <= 2, `served ${served} times`);
+    } finally {
+      b.tabSession.protocol.unhandle('https');
+    }
+  });
+
+  await check('HTTPS-only: a secure version that never answers stops waiting and asks', async () => {
+    b.tabSession.protocol.handle('https', () => new Promise(() => {}));
+    const realWait = tabs.httpsWaitMs;
+    tabs.httpsWaitMs = 400;
+    try {
+      tabs.navigate(tab.id, 'http://never-answers.example/');
+      await waitFor(() => tab.error?.noHttps, 3000);
+      assert.equal(tab.url, 'http://never-answers.example/');
+      await sleep(600);
+      assert.equal(tab.error?.noHttps, true, 'stays on the question');
+    } finally {
+      tabs.httpsWaitMs = realWait;
+      b.tabSession.protocol.unhandle('https');
+    }
+  });
+
+  await check('HTTPS-only: a page that loads in time is not interrupted', async () => {
+    b.tabSession.protocol.handle('https', () => new Response('<!doctype html><title>ok</title>', { headers: { 'content-type': 'text/html' } }));
+    const realWait = tabs.httpsWaitMs;
+    tabs.httpsWaitMs = 500;
+    try {
+      tabs.navigate(tab.id, 'http://answers.example/');
+      await waitFor(() => !tab.loading && tab.url === 'https://answers.example/', 3000);
+      await sleep(800);
+      assert.equal(tab.error, null);
+    } finally {
+      tabs.httpsWaitMs = realWait;
+      b.tabSession.protocol.unhandle('https');
+    }
+  });
+
+  await check('HTTPS-only: can be turned off', async () => {
+    b.updateSettings({ httpsOnly: false });
+    await load(`${base}/ads?http-again=1`);
+    assert.ok(tab.url.startsWith('http://'));
+  });
+
   await check('tabs: pin keeps a tab first, and duplicate, close others and close right work', async () => {
     const a = tabs.create(`${base}/a`, { activate: false });
     const c = tabs.create(`${base}/c`, { activate: false });
@@ -567,8 +678,6 @@ async function main() {
     assert.deepEqual(tab.view.getBounds(), normal);
   });
 
-  const directHits = [];
-  server.on('request', (req) => directHits.push(req.url));
   const socks = await fakeSocks();
   const gatherIps = `new Promise((resolve) => {
     const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.invalid:3478' }] });

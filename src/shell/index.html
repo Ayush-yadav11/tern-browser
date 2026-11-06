@@ -46,6 +46,7 @@
           <p id="message-body"></p>
           <code id="message-url"></code>
           <button id="message-retry" class="primary">Try again</button>
+          <button id="message-http" class="link" hidden>Continue without encryption</button>
         </section>
       </div>
       <aside id="panel" hidden aria-label="Settings panel">
@@ -119,6 +120,7 @@
           <h3>Privacy</h3>
           <p class="muted">A Tor tab hides your IP and keeps nothing after you close it, but it's slow and some sites block it.</p>
           <button id="tor-open" class="link" type="button">Open a Tor tab</button>
+          <label class="row"><span>Always use secure connections (HTTPS)</span><input id="https-only" type="checkbox" class="switch"></label>
           <label class="row"><span>Use a proxy for all normal tabs</span><input id="proxy-enabled" type="checkbox" class="switch"></label>
           <label class="row col"><span>Proxy server</span><input id="proxy-server" class="search tight" placeholder="socks5://host:1080" spellcheck="false" autocomplete="off"></label>
           <label class="row col"><span>Username (http:// proxies only)</span><input id="proxy-username" class="search tight" spellcheck="false" autocomplete="off"></label>

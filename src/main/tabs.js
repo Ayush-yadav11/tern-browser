@@ -2,14 +2,19 @@
 
 const { EventEmitter } = require('node:events');
 const { Menu, WebContentsView, clipboard } = require('electron');
-const { hostOf, isWebUrl } = require('./url');
+const { hostOf, isLocalHost, isWebUrl } = require('./url');
+
+// These mean the site or network is the problem, not that the site lacks HTTPS.
+const HTTPS_WAIT_MS = 10 * 1000;
+const HTTPS_WAIT_TOR_MS = 30 * 1000;
+const NOT_AN_HTTPS_PROBLEM = new Set([-3, -105, -106, -120, -130, -137]);
 
 const MAX_CLOSED = 20;
 
 // A tab only owns a renderer while it is awake. New tabs and sleeping tabs have
 // view === null, and the shell draws whatever belongs in the content area instead.
 class Tabs extends EventEmitter {
-  constructor({ window, session, torSession, onShortcut, getSleepMinutes, getWebRtcPolicy, getSearchUrl }) {
+  constructor({ window, session, torSession, onShortcut, getSleepMinutes, getWebRtcPolicy, getSearchUrl, getHttpsOnly }) {
     super();
     this.window = window;
     this.session = session;
@@ -19,6 +24,10 @@ class Tabs extends EventEmitter {
     this.torReady = false;
     this.getWebRtcPolicy = getWebRtcPolicy;
     this.getSearchUrl = getSearchUrl;
+    this.getHttpsOnly = getHttpsOnly;
+    // Sites allowed to stay on http until Tern closes. Tor tabs keep their own list.
+    this.httpAllowed = new Set();
+    this.httpsWaitMs = HTTPS_WAIT_MS;
     this.tabs = [];
     this.activeId = null;
     this.nextId = 1;
@@ -85,6 +94,7 @@ class Tabs extends EventEmitter {
       history: null,
       lastActive: Date.now(),
     };
+    tab.url = tab.url && this.secureUrl(tab, tab.url);
     if (Number.isInteger(index)) this.tabs.splice(index, 0, tab);
     else this.tabs.push(tab);
     if (activate) this.activate(tab.id);
@@ -105,6 +115,49 @@ class Tabs extends EventEmitter {
     if (this.canLoad(tab) && tab.url && !tab.view && !tab.error) this.wake(tab);
     this.attach(tab);
     this.changed();
+  }
+
+  // Returns the https address when HTTPS-only mode applies, and remembers the original.
+  secureUrl(tab, url) {
+    tab.upgrade = null;
+    if (!this.getHttpsOnly() || !url.startsWith('http:')) return url;
+    const parsed = new URL(url);
+    if (isLocalHost(parsed.hostname) || this.httpAllowed.has(`${tab.tor}|${parsed.hostname}`)) return url;
+    tab.upgrade = { host: parsed.hostname, http: url };
+    parsed.protocol = 'https:';
+    return parsed.href;
+  }
+
+  // Sites with no https often just never answer, so an upgrade only gets so long.
+  watchUpgrade(tab) {
+    clearTimeout(tab.upgradeTimer);
+    const { upgrade } = tab;
+    if (!upgrade) return;
+    tab.upgradeTimer = setTimeout(() => {
+      if (tab.upgrade !== upgrade) return;
+      tab.view?.webContents.stop();
+      this.showNoHttps(tab, 0, 'The secure version of this site did not respond.');
+    }, tab.tor ? Math.max(this.httpsWaitMs, HTTPS_WAIT_TOR_MS) : this.httpsWaitMs);
+    tab.upgradeTimer.unref?.();
+  }
+
+  showNoHttps(tab, code, description) {
+    clearTimeout(tab.upgradeTimer);
+    const { http } = tab.upgrade;
+    tab.error = { code, description, url: http, noHttps: true };
+    tab.url = http;
+    tab.title = '';
+    tab.favicon = '';
+    tab.upgrade = null;
+    this.attach(tab);
+    this.changed();
+  }
+
+  allowHttp(id) {
+    const tab = this.byId(id);
+    if (!tab?.error?.noHttps) return;
+    this.httpAllowed.add(`${tab.tor}|${hostOf(tab.error.url)}`);
+    this.navigate(id, tab.error.url);
   }
 
   // A Tor tab loads nothing at all until Tor is connected.
@@ -281,7 +334,8 @@ class Tabs extends EventEmitter {
   navigate(id, url) {
     const tab = this.byId(id);
     if (!tab || !isWebUrl(url)) return;
-    tab.url = url;
+    const target = this.secureUrl(tab, url);
+    tab.url = target;
     tab.error = null;
     tab.history = null;
     if (!this.canLoad(tab)) {
@@ -290,7 +344,8 @@ class Tabs extends EventEmitter {
     }
     if (!tab.view) this.createView(tab);
     this.attach(tab);
-    tab.view.webContents.loadURL(url).catch(() => {});
+    this.watchUpgrade(tab);
+    tab.view.webContents.loadURL(target).catch(() => {});
     tab.view.webContents.focus();
     this.changed();
   }
@@ -339,6 +394,7 @@ class Tabs extends EventEmitter {
       wc.navigationHistory.restore(tab.history).catch(() => {});
       tab.history = null;
     } else {
+      this.watchUpgrade(tab);
       wc.loadURL(tab.url).catch(() => {});
     }
   }
@@ -366,6 +422,7 @@ class Tabs extends EventEmitter {
     if (!tab.view) return;
     const { view } = tab;
     tab.view = null;
+    clearTimeout(tab.upgradeTimer);
     tab.loading = false;
     this.window.contentView.removeChildView(view);
     if (!view.webContents.isDestroyed()) view.webContents.close({ waitForBeforeUnload: false });
@@ -400,11 +457,36 @@ class Tabs extends EventEmitter {
       if (isWebUrl(url)) this.create(url, { activate: disposition !== 'background-tab', openedByPage: true, tor: tab.tor });
       return { action: 'deny' };
     });
-    const guard = (event, url) => {
-      if (!isWebUrl(url)) event.preventDefault();
+    const followSecurely = (event, url) => {
+      event.preventDefault();
+      const target = this.secureUrl(tab, url);
+      tab.url = target;
+      this.watchUpgrade(tab);
+      wc.loadURL(target).catch(() => {});
     };
-    wc.on('will-navigate', guard);
-    wc.on('will-redirect', guard);
+    wc.on('will-navigate', (event, url) => {
+      if (!isWebUrl(url)) event.preventDefault();
+      else if (this.secureUrl(tab, url) !== url) followSecurely(event, url);
+      else tab.upgrade = null;
+    });
+    wc.on('will-redirect', (event, url) => {
+      if (!event.isMainFrame) return;
+      if (!isWebUrl(url)) {
+        event.preventDefault();
+        return;
+      }
+      if (!url.startsWith('http:')) return;
+      // A site sending its secure address back to http would otherwise bounce forever.
+      if (tab.upgrade && tab.upgrade.host === hostOf(url)) {
+        event.preventDefault();
+        wc.stop();
+        this.showNoHttps(tab, 0, 'This site only offers an unencrypted connection.');
+        return;
+      }
+      const pending = tab.upgrade;
+      if (this.secureUrl(tab, url) !== url) followSecurely(event, url);
+      else tab.upgrade = pending;
+    });
     wc.on('will-frame-navigate', (event) => {
       if (event.isMainFrame && !isWebUrl(event.url)) event.preventDefault();
     });
@@ -420,6 +502,7 @@ class Tabs extends EventEmitter {
     });
     wc.on('did-navigate', (_e, url) => {
       if (isWebUrl(url)) {
+        tab.upgrade = null;
         // Chromium only reports a favicon when it changes, so pages on the same site keep theirs.
         if (hostOf(url) !== tab.faviconHost) tab.favicon = '';
         tab.faviconHost = hostOf(url);
@@ -463,6 +546,10 @@ class Tabs extends EventEmitter {
     wc.on('did-fail-load', (_e, code, description, url, isMainFrame) => {
       // -3 is an aborted navigation, which also fires when the user stops or moves on.
       if (!isMainFrame || code === -3 || !isCurrent()) return;
+      if (tab.upgrade && !NOT_AN_HTTPS_PROBLEM.has(code)) {
+        this.showNoHttps(tab, code, description);
+        return;
+      }
       tab.error = { code, description, url };
       if (isWebUrl(url)) tab.url = url;
       this.attach(tab);

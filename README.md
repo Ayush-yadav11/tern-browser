@@ -9,6 +9,12 @@ Download `Tern-Setup-x.y.z.exe` from the [latest release](https://github.com/Ayu
 and run it. It installs for your Windows account only, without needing admin rights. Because the
 installer isn't code-signed yet, Windows SmartScreen may warn you: choose **More info**, then **Run anyway**.
 
+## Secure connections
+
+HTTPS-only mode is on by default. Tern moves web addresses to https, and if a site has no secure version it asks
+before connecting without encryption, remembering your answer until Tern closes. Local addresses are left alone.
+Turn it off in Customize > Privacy.
+
 ## Hiding your IP
 
 An IP address can't be faked, because a website has to send its reply somewhere. Tern can route traffic

@@ -10,7 +10,7 @@ reuse their code, names or artwork. Tern stays light, and has no AI features.
 ## In order
 
 1. [x] Command palette: search tabs, bookmarks, history and actions (Zen, Vivaldi)
-2. [ ] HTTPS-only mode (LibreWolf, Tor Browser)
+2. [x] HTTPS-only mode (LibreWolf, Tor Browser)
 3. [ ] Remove tracking parameters from links, and send Global Privacy Control (Brave, LibreWolf)
 4. [ ] Search shortcuts such as `!w` and `!yt` in the address bar (Helium, DuckDuckGo)
 5. [ ] Remember zoom per site, and per-site settings in one place (most browsers)

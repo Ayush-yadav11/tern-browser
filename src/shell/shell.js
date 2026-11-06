@@ -382,8 +382,11 @@ function renderContent() {
     $('tor-retry').hidden = !failed;
   }
   if (tab?.error) {
-    $('message-title').textContent = "This page didn't load";
-    $('message-body').textContent = friendlyError(tab.error);
+    $('message-title').textContent = tab.error.noHttps ? "This site isn't secure" : "This page didn't load";
+    $('message-body').textContent = tab.error.noHttps
+      ? "Tern couldn't reach a secure (HTTPS) version, so it hasn't connected. Without encryption, your network could see or change what you send and receive here."
+      : friendlyError(tab.error);
+    $('message-http').hidden = !tab.error.noHttps;
     $('message-url').textContent = tab.error.url || tab.url;
   }
 }
@@ -786,6 +789,7 @@ function renderCustomize() {
   $('ask-download').checked = s.askDownloadPath;
   $('auto-update').checked = s.autoUpdate;
   $('side-collapse').checked = s.sideCollapse;
+  $('https-only').checked = s.httpsOnly;
   $('update-status').textContent = updateStatus(state.update);
   $('update-check').hidden = ['off', 'checking', 'downloading', 'ready'].includes(state.update.status);
   $('auto-update').disabled = state.update.status === 'off';
@@ -891,6 +895,7 @@ function wirePanel() {
   $('update-check').addEventListener('click', () => api.checkForUpdate());
   $('tor-open').addEventListener('click', () => api.newTorTab());
   $('side-collapse').addEventListener('change', (e) => api.setSettings({ sideCollapse: e.target.checked }));
+  $('https-only').addEventListener('change', (e) => api.setSettings({ httpsOnly: e.target.checked }));
   const clearData = $('clear-data');
   let clearDataTimer = null;
   clearData.addEventListener('click', async () => {
@@ -1240,6 +1245,7 @@ $('new-tab').addEventListener('click', () => api.newTab());
 $('new-tor-tab').addEventListener('click', () => api.newTorTab());
 $('tor-retry').addEventListener('click', () => api.retryTor());
 $('message-retry').addEventListener('click', () => api.reload(state.activeId));
+$('message-http').addEventListener('click', () => api.allowHttp(state.activeId));
 $('newtab-search').addEventListener('submit', (e) => {
   e.preventDefault();
   go($('newtab-input').value);

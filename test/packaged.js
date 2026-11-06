@@ -47,6 +47,8 @@ function cdp(wsUrl) {
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'tern-pkg-'));
+  // The test page is plain http, so HTTPS-only mode has to be off for it.
+  fs.writeFileSync(path.join(profile, 'settings.json'), JSON.stringify({ httpsOnly: false }));
   const url = `http://${HOST}:${server.address().port}/ads`;
   const t0 = Date.now();
   const child = spawn(EXE, [

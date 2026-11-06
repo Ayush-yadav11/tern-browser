@@ -21,6 +21,7 @@ const DEFAULTS = {
   askDownloadPath: false,
   autoUpdate: true,
   sideCollapse: true,
+  httpsOnly: true,
   proxyEnabled: false,
   proxyServer: '',
   proxyUsername: '',
@@ -53,6 +54,7 @@ function clean(input, base = DEFAULTS) {
   if ('askDownloadPath' in input) s.askDownloadPath = Boolean(input.askDownloadPath);
   if ('autoUpdate' in input) s.autoUpdate = Boolean(input.autoUpdate);
   if ('sideCollapse' in input) s.sideCollapse = Boolean(input.sideCollapse);
+  if ('httpsOnly' in input) s.httpsOnly = Boolean(input.httpsOnly);
   // An unusable server stays switched on and just fails to connect, which never exposes the real IP.
   if ('proxyEnabled' in input) s.proxyEnabled = Boolean(input.proxyEnabled);
   if ('proxyServer' in input) s.proxyServer = PROXY_SERVER.test(input.proxyServer) ? input.proxyServer : '';

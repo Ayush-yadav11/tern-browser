@@ -40,6 +40,12 @@ function hostOf(value) {
   }
 }
 
+// Addresses that can't have a public certificate, so HTTPS-only mode leaves them alone.
+const isLocalHost = (host) => (
+  !host.includes('.') || host.includes(':') || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)
+  || /\.(?:localhost|local|lan|internal|home\.arpa|onion)$/.test(host)
+);
+
 const isYouTubeHost = (host) => /(^|\.)youtube\.com$/.test(host);
 
-module.exports = { SEARCH_ENGINES, isWebUrl, resolveInput, hostOf, isYouTubeHost };
+module.exports = { SEARCH_ENGINES, isWebUrl, resolveInput, hostOf, isLocalHost, isYouTubeHost };

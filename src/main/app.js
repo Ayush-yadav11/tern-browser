@@ -232,6 +232,7 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     onShortcut: shortcut,
     getSleepMinutes: () => settings.sleepMinutes,
     getWebRtcPolicy: () => (settings.proxyEnabled ? 'disable_non_proxied_udp' : 'default_public_interface_only'),
+    getHttpsOnly: () => settings.httpsOnly,
     getSearchUrl: (text) => SEARCH_ENGINES[settings.searchEngine].url + encodeURIComponent(text),
   });
 
@@ -529,6 +530,7 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     },
     'tern:tab-menu': (id) => tabs.tabMenu(id),
     'tern:toggle-muted': (id) => tabs.toggleMuted(id),
+    'tern:allow-http': (id) => tabs.allowHttp(id),
     // Clears normal tabs only. Bookmarks, settings and Tor tabs aren't touched.
     'tern:clear-browsing-data': async () => {
       library.clearHistory();
