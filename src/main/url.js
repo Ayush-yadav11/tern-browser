@@ -40,4 +40,6 @@ function hostOf(value) {
   }
 }
 
-module.exports = { SEARCH_ENGINES, isWebUrl, resolveInput, hostOf };
+const isYouTubeHost = (host) => /(^|\.)youtube\.com$/.test(host);
+
+module.exports = { SEARCH_ENGINES, isWebUrl, resolveInput, hostOf, isYouTubeHost };

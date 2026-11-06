@@ -343,6 +343,28 @@ async function main() {
 
   const inShell = (fn) => shellEval(`(${fn})()`);
 
+  await check('filter page scripts run once per page, however many frames ask, and again after a reload', async () => {
+    const { engine } = b.adblock;
+    const real = engine.getCosmeticsFilters;
+    engine.getCosmeticsFilters = () => ({ active: true, styles: '', scripts: ['window.ranTimes = (window.ranTimes || 0) + 1;'] });
+    try {
+      await load(`${base}/ads?frames=1`);
+      const event = { sender: wc(), frameId: 1, processId: 1 };
+      await engine.onInjectCosmeticFilters(event, `${base}/ads?frames=1`);
+      await engine.onInjectCosmeticFilters(event, `${base}/ads?frames=1`);
+      await sleep(200);
+      assert.equal(await wc().executeJavaScript('window.ranTimes'), 1);
+      wc().reload();
+      await sleep(300);
+      await waitFor(() => !tab.loading);
+      await engine.onInjectCosmeticFilters(event, `${base}/ads?frames=1`);
+      await sleep(200);
+      assert.equal(await wc().executeJavaScript('window.ranTimes'), 1, 'a new page starts fresh');
+    } finally {
+      engine.getCosmeticsFilters = real;
+    }
+  });
+
   await check('YouTube: ad data is removed before the page reads it, and the video data is kept', async () => {
     // youtube.com is HTTPS-only in every browser, so the test answers for it inside the session.
     const yt = 'https://www.youtube.com';
@@ -368,6 +390,8 @@ async function main() {
     assert.deepEqual(on.initial, ['videoDetails']);
     assert.deepEqual(on.parsed, { playerResponse: { streamingData: 'kept' } });
     assert.deepEqual(on.fetched, { videoDetails: 'kept' });
+    // Overflowed while the filter engine's page scripts also ran here, which stopped the player appearing.
+    assert.ok(await wc().executeJavaScript('JSON.parse.toString().length > 0'));
 
     b.updateSettings({ allowedSites: ['www.youtube.com'] });
     await load(`${yt}/watch?v=2`);
@@ -698,6 +722,18 @@ async function main() {
       assert.ok(site.blocked > 0, 'nothing blocked');
       return `${site.blocked} requests blocked`;
     });
+    await check('live: on YouTube, clicking a search result brings up a playing video', async () => {
+      const yt = tabs.create(`https://www.youtube.com/results?search_query=${encodeURIComponent('cooking at home')}`);
+      await waitFor(() => yt.view && !yt.loading, 30000);
+      await sleep(4000);
+      const page = yt.view.webContents;
+      page.setAudioMuted(true);
+      await page.executeJavaScript("[...document.querySelectorAll('a#video-title')].find((a) => /watch\\?v=/.test(a.href) && a.getBoundingClientRect().width > 0).click(); 0", true);
+      await waitFor(() => page.executeJavaScript("(document.querySelector('#movie_player video')?.currentTime ?? 0) > 2"), 30000);
+      assert.equal(await page.executeJavaScript("Boolean(document.querySelector('#movie_player.ad-showing'))"), false);
+      tabs.close(yt.id);
+    });
+
     await check('live: built-in AI APIs absent on a secure https page', async () => {
       const present = await tabs.active.view.webContents.executeJavaScript(
         "['LanguageModel','Summarizer','Writer','Rewriter','Proofreader','Translator','LanguageDetector','ai'].filter((n) => n in window)",
