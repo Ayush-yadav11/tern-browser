@@ -54,6 +54,7 @@ npm start
 | `src/main/app.js` | Starts the browser: window, keyboard shortcuts, permissions, messages from the UI |
 | `src/main/tabs.js` | Tabs, including putting unused ones to sleep to free memory |
 | `src/main/adblock.js` | Ad and tracker blocking, per-site switch, filter refresh |
+| `src/page/youtube-preload.js` | Removes YouTube's ad data before the page reads it |
 | `src/main/flags.js` | Chromium switches that turn off AI features and background services |
 | `src/main/library.js` | Bookmarks, history and address bar matching |
 | `src/main/downloads.js` | Saving files, pause, resume, cancel, and the warning before opening programs |

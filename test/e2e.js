@@ -343,6 +343,44 @@ async function main() {
 
   const inShell = (fn) => shellEval(`(${fn})()`);
 
+  await check('YouTube: ad data is removed before the page reads it, and the video data is kept', async () => {
+    // youtube.com is HTTPS-only in every browser, so the test answers for it inside the session.
+    const yt = 'https://www.youtube.com';
+    b.tabSession.protocol.handle('https', (request) => {
+      if (new URL(request.url).pathname === '/player.json') {
+        return new Response('{"adPlacements":[1],"videoDetails":"kept"}', { headers: { 'content-type': 'application/json' } });
+      }
+      // Shaped like a YouTube page, with ad data in each place the real one puts it.
+      return new Response(`<!doctype html><title>watch</title><script>
+        var ytInitialPlayerResponse = { adPlacements: [1], playerAds: [1], videoDetails: { title: 'kept' } };
+        window.parsed = JSON.parse('{"adSlots":[1],"playerResponse":{"adPlacements":[1],"streamingData":"kept"}}');
+        window.fetched = fetch('/player.json').then((r) => r.json());
+      </script>`, { headers: { 'content-type': 'text/html' } });
+    });
+    const read = `(async () => ({
+      initial: Object.keys(ytInitialPlayerResponse),
+      parsed: window.parsed,
+      fetched: await window.fetched,
+    }))()`;
+    const untouched = "Object.getOwnPropertyDescriptor(window, 'ytInitialPlayerResponse').get === undefined";
+    await load(`${yt}/watch?v=1`);
+    const on = await wc().executeJavaScript(read);
+    assert.deepEqual(on.initial, ['videoDetails']);
+    assert.deepEqual(on.parsed, { playerResponse: { streamingData: 'kept' } });
+    assert.deepEqual(on.fetched, { videoDetails: 'kept' });
+
+    b.updateSettings({ allowedSites: ['www.youtube.com'] });
+    await load(`${yt}/watch?v=2`);
+    const allowed = await wc().executeJavaScript(read);
+    assert.ok(allowed.initial.includes('adPlacements'), 'the per-site switch turns it off');
+    assert.equal(await wc().executeJavaScript(untouched), true);
+    b.updateSettings({ allowedSites: [] });
+    b.tabSession.protocol.unhandle('https');
+
+    await load(`${base}/not-youtube`);
+    assert.equal(await wc().executeJavaScript("JSON.parse.toString().includes('native code')"), true, 'other sites are left alone');
+  });
+
   await check('history: pages you visit are recorded with their titles', async () => {
     await load(`${base}/history-page`);
     await waitFor(() => b.library.history.get(`${base}/history-page`)?.title === 'Tern test page', 4000);

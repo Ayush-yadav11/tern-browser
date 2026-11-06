@@ -219,6 +219,10 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     },
   });
   adblock.setEnabled(settings.adblock);
+  tabSession.registerPreloadScript({ type: 'frame', filePath: path.join(__dirname, '..', 'page', 'youtube-preload.js') });
+  ipcMain.on('tern:block-youtube-ads', (event, host) => {
+    event.returnValue = adblock.enabled && !adblock.isSiteAllowed(String(host));
+  });
 
   const updater = new Updater({ isAutomatic: () => settings.autoUpdate });
   updater.on('changed', pushState);
@@ -528,6 +532,7 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
   win.on('closed', () => {
     for (const channel of Object.keys(handlers)) ipcMain.removeHandler(channel);
     ipcMain.removeHandler('tern:suggest-pick');
+    ipcMain.removeAllListeners('tern:block-youtube-ads');
   });
 
   await shell.loadFile(path.join(SHELL_DIR, 'index.html'));
