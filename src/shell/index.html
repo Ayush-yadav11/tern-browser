@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src http: https: data:">
+  <title>Tern</title>
+  <link rel="stylesheet" href="shell.css">
+</head>
+<body>
+  <div id="app">
+    <div id="cap" class="drag"></div>
+    <nav id="tabs" class="drag" aria-label="Tabs">
+      <div id="tablist" role="tablist"></div>
+      <button id="new-tab" class="icon no-drag" title="New tab (Ctrl+T)" aria-label="New tab"><svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg></button>
+    </nav>
+    <header id="toolbar" class="drag"></header>
+    <div id="strips">
+    <nav id="bookmarks-bar" class="no-drag" aria-label="Bookmarks bar" hidden></nav>
+    <div id="findbar" hidden>
+      <input id="find-input" placeholder="Find in page" aria-label="Find in page" spellcheck="false">
+      <span id="find-count" aria-live="polite"></span>
+      <button id="find-prev" class="icon" title="Previous match" aria-label="Previous match"><svg viewBox="0 0 16 16"><path d="M4 10l4-4 4 4"/></svg></button>
+      <button id="find-next" class="icon" title="Next match" aria-label="Next match"><svg viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg></button>
+      <button id="find-close" class="icon" title="Close (Esc)" aria-label="Close find bar"><svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+    </div>
+    </div>
+    <main id="main">
+      <div id="content">
+        <section id="newtab" hidden>
+          <svg class="mark" viewBox="0 0 64 64" aria-hidden="true"><path d="M4 22c14-3 27 0 36 9l20-11-13 20c-5 8-15 12-26 9l-9 7 3-13C10 39 6 31 4 22z"/></svg>
+          <h1>Tern</h1>
+          <form id="newtab-search">
+            <input id="newtab-input" placeholder="Search or enter address" aria-label="Search or enter address" spellcheck="false" autocomplete="off">
+          </form>
+          <div id="newtab-shortcuts" aria-label="Bookmarks"></div>
+          <p id="newtab-stat"></p>
+        </section>
+        <section id="message" hidden>
+          <h1 id="message-title"></h1>
+          <p id="message-body"></p>
+          <code id="message-url"></code>
+          <button id="message-retry" class="primary">Try again</button>
+        </section>
+      </div>
+      <aside id="panel" hidden aria-label="Settings panel">
+        <div class="panel-head">
+          <h2 id="panel-title"></h2>
+          <button id="panel-close" class="icon" title="Close panel" aria-label="Close panel"><svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+        </div>
+        <div id="panel-shield" class="panel-body" hidden>
+          <p class="big" id="shield-count"></p>
+          <p class="muted" id="shield-count-label"></p>
+          <label class="row"><span>Block on <b id="shield-host"></b></span><input id="shield-site" type="checkbox" class="switch"></label>
+          <label class="row"><span>Block everywhere</span><input id="shield-global" type="checkbox" class="switch"></label>
+          <dl class="facts">
+            <dt>Blocked since install</dt><dd id="shield-total"></dd>
+            <dt>Filter lists updated</dt><dd id="shield-updated"></dd>
+          </dl>
+        </div>
+        <div id="panel-library" class="panel-body" hidden>
+          <div class="seg" id="seg-library" role="group" aria-label="Bookmarks or history">
+            <button data-value="bookmarks">Bookmarks</button><button data-value="history">History</button>
+          </div>
+          <input id="library-search" class="search" type="search" placeholder="Search" aria-label="Search bookmarks and history" spellcheck="false" autocomplete="off">
+          <ul id="bookmark-list" class="rows"></ul>
+          <div id="history-area" hidden>
+            <div id="history-list"></div>
+            <button id="history-clear" class="link" type="button">Clear all history</button>
+          </div>
+          <p id="library-empty" class="muted empty" hidden></p>
+        </div>
+        <div id="panel-downloads" class="panel-body" hidden>
+          <ul id="download-list" class="rows"></ul>
+          <p id="downloads-empty" class="muted empty" hidden>Files you download will show up here.</p>
+          <button id="downloads-clear" class="link" type="button" hidden>Clear finished from this list</button>
+        </div>
+        <div id="panel-customize" class="panel-body" hidden>
+          <h3>Theme</h3>
+          <div id="themes" class="themes"></div>
+          <label class="row"><span>Accent colour</span><span class="inline"><button id="accent-reset" class="link" type="button">Default</button><input id="accent" type="color" aria-label="Accent colour"></span></label>
+          <label class="row col"><span>Corners <output id="radius-value"></output></span><input id="radius" type="range" min="0" max="16" step="1"></label>
+          <label class="row"><span>Compact mode</span><input id="compact" type="checkbox" class="switch"></label>
+
+          <h3>Layout</h3>
+          <div class="row col"><span>Tabs</span>
+            <div class="seg" id="seg-tabs" role="group" aria-label="Tab position">
+              <button data-value="top">Top</button><button data-value="left">Left</button><button data-value="right">Right</button>
+            </div>
+          </div>
+          <div class="row col"><span>Address bar</span>
+            <div class="seg" id="seg-toolbar" role="group" aria-label="Address bar position">
+              <button data-value="top">Top</button><button data-value="bottom">Bottom</button>
+            </div>
+          </div>
+
+          <h3>Toolbar</h3>
+          <ul id="toolbar-items" class="items"></ul>
+
+          <h3>Browsing</h3>
+          <label class="row col"><span>Search engine</span><select id="engine"></select></label>
+          <label class="row col"><span>Put unused tabs to sleep</span>
+            <select id="sleep">
+              <option value="0">Never</option><option value="5">After 5 minutes</option><option value="10">After 10 minutes</option><option value="30">After 30 minutes</option><option value="60">After 1 hour</option>
+            </select>
+          </label>
+
+          <label class="row"><span>Bookmarks bar</span><input id="bookmarks-bar-toggle" type="checkbox" class="switch"></label>
+          <label class="row"><span>Save browsing history</span><input id="save-history" type="checkbox" class="switch"></label>
+          <label class="row"><span>Ask where to save downloads</span><input id="ask-download" type="checkbox" class="switch"></label>
+
+          <h3>Updates</h3>
+          <p id="update-status" class="muted"></p>
+          <label class="row"><span>Update automatically</span><input id="auto-update" type="checkbox" class="switch"></label>
+          <button id="update-check" class="link" type="button">Check for updates now</button>
+          <dl class="facts">
+            <dt>Tern version</dt><dd id="about-version"></dd>
+            <dt>Chromium version</dt><dd id="about-chromium"></dd>
+          </dl>
+
+          <h3>Custom CSS</h3>
+          <textarea id="custom-css" rows="6" spellcheck="false" placeholder="#tabs { letter-spacing: .02em; }" aria-label="Custom CSS for the browser interface"></textarea>
+          <button id="reset" class="link" type="button">Reset all appearance settings</button>
+        </div>
+      </aside>
+    </main>
+  </div>
+  <script src="shell.js"></script>
+</body>
+</html>

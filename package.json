@@ -1,0 +1,32 @@
+{
+  "name": "tern-browser",
+  "productName": "Tern",
+  "version": "0.2.0",
+  "description": "A light, customizable Chromium-based browser with built-in ad blocking and no AI features.",
+  "main": "src/main/index.js",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "test": "electron test/e2e.js",
+    "update-filters": "electron scripts/update-filters.js",
+    "make-icon": "electron scripts/make-icon.js",
+    "package": "node scripts/package.js",
+    "test:packaged": "node test/packaged.js",
+    "update": "npm install --save-dev electron@latest && npm install @ghostery/adblocker-electron@latest && npm run update-filters && npm test && npm run package && npm run test:packaged",
+    "installer": "node scripts/installer.js",
+    "test:update": "node test/update.js"
+  },
+  "dependencies": {
+    "@ghostery/adblocker-electron": "^2.20.3",
+    "electron-updater": "^6.8.11"
+  },
+  "devDependencies": {
+    "@electron/fuses": "^2.1.3",
+    "@electron/packager": "^20.3.0",
+    "electron": "^45.2.3",
+    "electron-builder": "^26.18.0"
+  },
+  "repository": "github:Ayush-yadav11/tern-browser",
+  "author": "Ayush Yadav"
+}

@@ -1,0 +1,56 @@
+'use strict';
+
+const { contextBridge, ipcRenderer } = require('electron');
+
+const invoke = (channel) => (...args) => ipcRenderer.invoke(channel, ...args);
+const listen = (channel) => (callback) => {
+  ipcRenderer.on(channel, (_event, payload) => callback(payload));
+};
+
+contextBridge.exposeInMainWorld('tern', {
+  ready: invoke('tern:ready'),
+  newTab: invoke('tern:new-tab'),
+  activate: invoke('tern:activate'),
+  close: invoke('tern:close'),
+  move: invoke('tern:move'),
+  navigate: invoke('tern:navigate'),
+  back: invoke('tern:back'),
+  forward: invoke('tern:forward'),
+  reload: invoke('tern:reload'),
+  stop: invoke('tern:stop'),
+  home: invoke('tern:home'),
+  setContentBounds: invoke('tern:content-bounds'),
+  setOverlay: invoke('tern:set-overlay'),
+  setSettings: invoke('tern:settings'),
+  resetSettings: invoke('tern:reset-settings'),
+  toggleSite: invoke('tern:toggle-site'),
+  find: invoke('tern:find'),
+  findStop: invoke('tern:find-stop'),
+  focusPage: invoke('tern:focus-page'),
+  open: invoke('tern:open'),
+  checkForUpdate: invoke('tern:update-check'),
+  installUpdate: invoke('tern:update-install'),
+  toggleBookmark: invoke('tern:toggle-bookmark'),
+  renameBookmark: invoke('tern:bookmark-rename'),
+  removeBookmark: invoke('tern:bookmark-remove'),
+  moveBookmark: invoke('tern:bookmark-move'),
+  searchHistory: invoke('tern:history-search'),
+  removeHistory: invoke('tern:history-remove'),
+  clearHistory: invoke('tern:history-clear'),
+  refreshDownloads: invoke('tern:downloads-refresh'),
+  downloadAction: invoke('tern:download-action'),
+  clearDownloads: invoke('tern:downloads-clear'),
+  suggest: invoke('tern:suggest'),
+  suggestSelect: invoke('tern:suggest-select'),
+  suggestHide: invoke('tern:suggest-hide'),
+  onBookmarks: listen('tern:bookmarks'),
+  onHistoryChanged: listen('tern:history-changed'),
+  onDownloads: listen('tern:downloads'),
+  onDownloadStarted: listen('tern:download-started'),
+  onOpenPanel: listen('tern:open-panel'),
+  onSuggestPicked: listen('tern:suggest-picked'),
+  onState: listen('tern:state'),
+  onFocusAddress: listen('tern:focus-address'),
+  onFindOpen: listen('tern:find-open'),
+  onFound: listen('tern:found'),
+});

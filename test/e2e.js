@@ -1,0 +1,707 @@
+'use strict';
+
+// Drives the real browser code with a throwaway profile. Run with: npm test
+// Set TERN_LIVE=1 to also load a real ad-heavy site (needs internet).
+process.env.TERN_TEST = '1';
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const http = require('node:http');
+const os = require('node:os');
+const path = require('node:path');
+const { app } = require('electron');
+const { start } = require('../src/main/app');
+const { resolveInput } = require('../src/main/url');
+const { clean } = require('../src/main/settings');
+const { isRisky } = require('../src/main/downloads');
+const { Library } = require('../src/main/library');
+
+const OUT = path.join(__dirname, 'output');
+// Filters skip raw IP addresses, so the local test server needs a normal-looking name.
+const TEST_HOST = 'fixture.example.com';
+app.commandLine.appendSwitch('host-resolver-rules', `MAP ${TEST_HOST} 127.0.0.1`);
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const results = [];
+
+async function check(name, fn) {
+  try {
+    const detail = await fn();
+    results.push({ name, ok: true });
+    console.log(`PASS  ${name}${detail ? `  (${detail})` : ''}`);
+  } catch (error) {
+    results.push({ name, ok: false });
+    const where = /e2e\.js:(\d+)/.exec(error.stack.split('\n').slice(1).find((l) => l.includes('e2e.js') && !l.includes('waitFor')) ?? '');
+    console.log(`FAIL  ${name}${where ? ` (e2e.js line ${where[1]})` : ''}\n      ${String(error.message).split('\n').slice(0, 6).join('\n      ')}`);
+  }
+}
+
+function serve() {
+  const page = fs.readFileSync(path.join(__dirname, 'fixtures', 'ads.html'));
+  const server = http.createServer((req, res) => {
+    if (req.url.startsWith('/ok.gif')) {
+      res.writeHead(200, { 'content-type': 'image/png' });
+      res.end(PNG);
+    } else if (req.url.startsWith('/report.txt') || req.url.startsWith('/popup.txt')) {
+      res.writeHead(200, { 'content-type': 'text/plain', 'content-disposition': 'attachment' });
+      res.end('hello from the test server');
+    } else if (req.url.startsWith('/slow.bin')) {
+      // Slow enough to pause and cancel while it's running.
+      const chunk = Buffer.alloc(64 * 1024);
+      const total = 40;
+      res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-disposition': 'attachment', 'content-length': String(total * chunk.length) });
+      let sent = 0;
+      const timer = setInterval(() => {
+        res.write(chunk);
+        if (++sent === total) {
+          clearInterval(timer);
+          res.end();
+        }
+      }, 100);
+      res.on('close', () => clearInterval(timer));
+    } else {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end(page);
+    }
+  });
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)));
+}
+
+const waitFor = async (fn, ms = 15000) => {
+  const end = Date.now() + ms;
+  for (;;) {
+    const value = await fn();
+    if (value) return value;
+    if (Date.now() > end) throw new Error('Timed out waiting');
+    await sleep(100);
+  }
+};
+
+async function main() {
+  fs.mkdirSync(OUT, { recursive: true });
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'tern-test-'));
+  const downloadDir = path.join(profile, 'my-downloads');
+  app.setPath('downloads', downloadDir);
+  const t0 = Date.now();
+  const server = await serve();
+  const base = `http://${TEST_HOST}:${server.address().port}`;
+  const b = await start({ userData: profile, show: true });
+  const startMs = Date.now() - t0;
+  const { tabs, shell, win } = b;
+  const shellEval = (code) => shell.executeJavaScript(code, true);
+  const shot = async (wc, name) => {
+    await sleep(400);
+    // Windows can't capture while the screen is locked or off. That says nothing about the browser.
+    try {
+      const image = await wc.capturePage();
+      fs.writeFileSync(path.join(OUT, `${name}.png`), image.toPNG());
+    } catch (error) {
+      console.log(`NOTE  screenshot ${name} skipped: ${error.message}`);
+    }
+  };
+  const load = async (url) => {
+    const tab = tabs.active;
+    tabs.navigate(tab.id, url);
+    await waitFor(() => tab.view && !tab.loading && tab.url.startsWith(url.split('?')[0]));
+    return tab;
+  };
+  const measureMemory = async () => {
+    await sleep(1500);
+    // Private memory: working sets count shared pages once per process and overstate the total.
+    const metrics = app.getAppMetrics();
+    const parts = metrics.map((m) => `${m.type} ${Math.round(m.memory.privateBytes / 1024)}`);
+    const total = Math.round(metrics.reduce((sum, m) => sum + m.memory.privateBytes, 0) / 1024);
+    return `${total} MB private [${parts.join(', ')}]`;
+  };
+
+  await sleep(500);
+  const idleMemory = await measureMemory();
+
+  await check('address bar: words search, domains load, unsafe schemes never load', () => {
+    assert.equal(resolveInput('example.com', 'ddg-noai'), 'https://example.com/');
+    assert.equal(resolveInput('localhost:3000/x', 'ddg-noai'), 'http://localhost:3000/x');
+    assert.ok(resolveInput('hello world', 'ddg-noai').startsWith('https://noai.duckduckgo.com/'));
+    for (const bad of ['javascript:alert(1)', 'file:///C:/Windows/win.ini', 'chrome://settings', 'data:text/html,x']) {
+      assert.ok(resolveInput(bad, 'ddg-noai').startsWith('https://noai.duckduckgo.com/'), bad);
+    }
+  });
+
+  await check('settings: a damaged file cannot lose controls or set bad values', () => {
+    const s = clean({ theme: 'x', radius: 99, accent: 'red;', toolbarItems: [{ id: 'url', visible: false }, { id: 'nope' }] });
+    assert.equal(s.theme, 'midnight');
+    assert.equal(s.radius, 16);
+    assert.equal(s.accent, '');
+    assert.equal(s.toolbarItems.length, 10);
+    assert.equal(s.toolbarItems.find((i) => i.id === 'url').visible, true);
+  });
+
+  await check('settings: toolbars saved by the older version gain the new buttons in sensible places', () => {
+    const older = ['customize', 'url', 'back', 'forward', 'reload', 'home', 'shield'].map((id) => ({ id, visible: id !== 'home' }));
+    const { toolbarItems: items } = clean({ toolbarItems: older });
+    const ids = items.map((i) => i.id);
+    assert.equal(ids[0], 'customize', 'custom order is kept');
+    assert.equal(ids.indexOf('star'), ids.indexOf('url') + 1);
+    assert.equal(ids.indexOf('library'), ids.indexOf('shield') + 1);
+    assert.equal(ids.indexOf('downloads'), ids.indexOf('library') + 1);
+    assert.equal(items.find((i) => i.id === 'home').visible, false, 'hidden stays hidden');
+  });
+
+  await check('new tab uses no page process until you navigate', async () => {
+    assert.equal(tabs.active.view, null);
+    assert.equal(await shellEval("document.getElementById('newtab').hidden"), false);
+    await shot(shell, '01-new-tab');
+  });
+
+  const tab = await load(`${base}/ads`);
+  const wc = () => tab.view.webContents;
+  await wc().executeJavaScript('window.ready');
+  const pageResults = await wc().executeJavaScript('window.results');
+
+  await check('ad blocking: ad and tracker requests are stopped, normal ones pass', () => {
+    assert.equal(pageResults.doubleclick, 'error', 'doubleclick');
+    assert.equal(pageResults.analytics, 'error', 'analytics');
+    assert.equal(pageResults.adsense, 'error', 'adsense');
+    assert.equal(pageResults.control, 'loaded', 'control image');
+    assert.ok(tab.blocked >= 3, `counter was ${tab.blocked}`);
+    return `${tab.blocked} blocked`;
+  });
+
+  await check('ad blocking: ad boxes on the page are hidden, normal content stays', async () => {
+    const shown = (id) => `getComputedStyle(document.getElementById('${id}')).display !== 'none'`;
+    await waitFor(() => wc().executeJavaScript(`!(${shown('cosmetic-1')}) && !(${shown('cosmetic-2')})`), 6000);
+    assert.equal(await wc().executeJavaScript(shown('control')), true);
+  });
+  await shot(wc(), '02-ads-blocked');
+
+  await check('per-site switch: allowing a site lets ads through, turning it back blocks them', async () => {
+    b.updateSettings({ allowedSites: [TEST_HOST] });
+    wc().reload();
+    await sleep(300);
+    await waitFor(() => !tab.loading);
+    await wc().executeJavaScript('window.ready');
+    const allowed = await wc().executeJavaScript('window.results');
+    assert.notEqual(allowed.control, undefined);
+    assert.equal(tab.blocked, 0, 'nothing counted while allowed');
+    b.updateSettings({ allowedSites: [] });
+    wc().reload();
+    await sleep(300);
+    await waitFor(() => !tab.loading);
+    await wc().executeJavaScript('window.ready');
+    assert.equal((await wc().executeJavaScript('window.results')).doubleclick, 'error');
+  });
+
+  await check('no AI: built-in AI APIs are absent from web pages', async () => {
+    const names = ['LanguageModel', 'Summarizer', 'Writer', 'Rewriter', 'Proofreader', 'Translator', 'LanguageDetector', 'ai'];
+    const present = await wc().executeJavaScript(`${JSON.stringify(names)}.filter((n) => n in window)`);
+    assert.deepEqual(present, []);
+    return `checked ${names.join(', ')}`;
+  });
+
+  await check('no AI: the browser UI has no AI wording', async () => {
+    for (const panel of ['customize', 'shield', 'library', 'downloads']) {
+      await shellEval(`openPanel = '${panel}'; renderPanel();`);
+      // The search engine list is left out because "DuckDuckGo (no AI)" names the absence of it.
+      const text = await shellEval(`(() => {
+        const copy = document.body.cloneNode(true);
+        copy.querySelectorAll('select, script, style').forEach((el) => el.remove());
+        return copy.textContent;
+      })()`);
+      assert.doesNotMatch(text, /\b(AI|gemini|copilot|assistant|summari[sz]e)\b/i);
+    }
+    await shellEval('openPanel = null; renderPanel();');
+  });
+
+  await check('user agent does not reveal Electron', async () => {
+    const ua = await wc().executeJavaScript('navigator.userAgent');
+    assert.doesNotMatch(ua, /Electron|Tern/);
+    return ua;
+  });
+
+  await check('customization: tabs move to the left and the page view follows', async () => {
+    b.updateSettings({ tabPosition: 'left' });
+    await sleep(500);
+    const rect = await shellEval('(() => { const r = document.getElementById("content").getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y) }; })()');
+    assert.equal(rect.x, 220);
+    assert.deepEqual({ x: tab.view.getBounds().x, y: tab.view.getBounds().y }, rect);
+  });
+  await shot(shell, '03-shell-left-tabs');
+
+  await check('customization: theme, accent, compact and toolbar order apply', async () => {
+    const items = [...b.getSettings().toolbarItems].reverse();
+    b.updateSettings({ theme: 'paper', accent: '#00aa66', compact: true, toolbarItems: items, tabPosition: 'right', toolbarPosition: 'bottom' });
+    await sleep(500);
+    const info = await shellEval(`({
+      theme: document.body.dataset.theme,
+      accent: getComputedStyle(document.body).getPropertyValue('--accent').trim(),
+      markFill: getComputedStyle(document.querySelector('.mark')).fill,
+      compact: document.body.classList.contains('compact'),
+      first: document.querySelector('#toolbar > *').id,
+    })`);
+    assert.equal(info.theme, 'paper');
+    assert.equal(info.accent, '#00aa66');
+    assert.equal(info.markFill, 'rgb(0, 170, 102)', 'accent reaches elements');
+    assert.equal(info.compact, true);
+    assert.equal(info.first, 'customize-btn');
+  });
+  await shot(shell, '04-shell-paper-right');
+
+  await check('customization: panel shrinks the page instead of covering it', async () => {
+    b.updateSettings({ theme: 'midnight', accent: '', compact: false, tabPosition: 'top', toolbarPosition: 'top', toolbarItems: clean({}).toolbarItems });
+    await sleep(300);
+    const before = tab.view.getBounds().width;
+    await shellEval("togglePanel('customize')");
+    await sleep(400);
+    assert.equal(tab.view.getBounds().width, before - 310);
+    await shot(shell, '05-customize-panel');
+    await shellEval("togglePanel('customize')");
+  });
+
+  await check('tabs: open, switch, sleep frees the renderer, waking restores the page', async () => {
+    const other = tabs.create(`${base}/other`, { activate: true });
+    await waitFor(() => other.view && !other.loading);
+    tabs.activate(tab.id);
+    await sleep(200);
+    assert.ok(other.view, 'still awake');
+    other.lastActive = 0;
+    tabs.sleepIdle();
+    assert.equal(other.view, null, 'asleep');
+    tabs.activate(other.id);
+    await waitFor(() => other.view && !other.loading);
+    assert.equal(other.url, `${base}/other`);
+    tabs.close(other.id);
+    assert.equal(tabs.active.id, tab.id);
+  });
+
+  await check('tabs: Ctrl+T works while a page has focus', async () => {
+    const count = tabs.tabs.length;
+    wc().focus();
+    const key = (keyCode, modifiers) => {
+      tabs.active.view?.webContents.sendInputEvent({ type: 'keyDown', keyCode, modifiers });
+      tabs.active.view?.webContents.sendInputEvent({ type: 'keyUp', keyCode, modifiers });
+    };
+    await sleep(100);
+    key('t', ['control']);
+    await waitFor(() => tabs.tabs.length === count + 1, 3000);
+    tabs.close(tabs.activeId);
+    tabs.activate(tab.id);
+  });
+
+  await check('safety: pages cannot navigate to file: or other local schemes', async () => {
+    const before = tab.url;
+    await wc().executeJavaScript("location.href = 'file:///C:/Windows/win.ini'").catch(() => {});
+    await sleep(600);
+    assert.equal(tab.url, before);
+    assert.ok(!wc().getURL().startsWith('file:'));
+  });
+
+  await check('safety: tab pages have no access to browser internals', async () => {
+    const leaked = await wc().executeJavaScript("['tern', 'require', 'process', 'electron'].filter((n) => n in window)");
+    assert.deepEqual(leaked, []);
+  });
+
+  await check('failed page shows a readable message and hides the page view', async () => {
+    tabs.navigate(tab.id, 'http://127.0.0.1:9/');
+    await waitFor(() => tab.error, 8000);
+    await sleep(300);
+    assert.equal(await shellEval("document.getElementById('message').hidden"), false);
+    assert.ok(!win.contentView.children.includes(tab.view), 'view removed');
+    await shot(shell, '06-error');
+    tabs.navigate(tab.id, `${base}/ads`);
+    await waitFor(() => !tab.error && !tab.loading);
+  });
+
+  await check('find in page: opens with Ctrl+F and counts matches', async () => {
+    wc().focus();
+    await sleep(100);
+    wc().sendInputEvent({ type: 'keyDown', keyCode: 'f', modifiers: ['control'] });
+    wc().sendInputEvent({ type: 'keyUp', keyCode: 'f', modifiers: ['control'] });
+    await waitFor(() => shellEval("!document.getElementById('findbar').hidden"), 3000);
+    await shellEval(`(() => {
+      const input = document.getElementById('find-input');
+      input.value = 'visible';
+      input.dispatchEvent(new Event('input'));
+    })()`);
+    const count = await waitFor(() => shellEval("document.getElementById('find-count').textContent"), 3000);
+    assert.match(count, /of [1-9]/);
+    await shellEval("document.getElementById('find-close').click()");
+    return count;
+  });
+
+  await check('video fullscreen: the page fills the window and comes back', async () => {
+    await sleep(500); // Let the page view settle after the find bar closes.
+    const normal = tab.view.getBounds();
+    // Not awaited: the browser never answers this while the screen is locked or off.
+    wc().executeJavaScript('document.documentElement.requestFullscreen()', true).catch(() => {});
+    await waitFor(() => tabs.fullscreen, 4000);
+    await sleep(700);
+    assert.equal(tab.view.getBounds().y, 0);
+    assert.ok(tab.view.getBounds().width >= win.getContentBounds().width - 1);
+    wc().executeJavaScript('document.exitFullscreen()', true).catch(() => {});
+    await waitFor(() => !tabs.fullscreen, 4000);
+    await sleep(700);
+    assert.deepEqual(tab.view.getBounds(), normal);
+  });
+
+  const inShell = (fn) => shellEval(`(${fn})()`);
+
+  await check('history: pages you visit are recorded with their titles', async () => {
+    await load(`${base}/history-page`);
+    await waitFor(() => b.library.history.get(`${base}/history-page`)?.title === 'Tern test page', 4000);
+    assert.equal(b.library.history.get(`${base}/history-page`).visits, 1);
+  });
+
+  await check('history: failed pages are not recorded, and reloading is not a second visit', async () => {
+    assert.ok(![...b.library.history.keys()].some((u) => u.includes('127.0.0.1:9')));
+    await load(`${base}/history-page`);
+    assert.equal(b.library.history.get(`${base}/history-page`).visits, 1);
+  });
+
+  await check('history panel: shows visits, filters, removes one entry, needs two clicks to clear', async () => {
+    await load(`${base}/second-page`);
+    await sleep(100);
+    await shellEval("showPanel('library', 'history')");
+    await waitFor(() => inShell(() => document.querySelectorAll('#history-list .entry').length >= 2), 3000);
+    assert.equal(await inShell(() => document.querySelector('#history-list .day').textContent), 'Today');
+    await shot(shell, '09-history-panel');
+    await inShell(() => {
+      const input = document.getElementById('library-search');
+      input.value = 'second-page';
+      input.dispatchEvent(new Event('input'));
+    });
+    await waitFor(() => inShell(() => document.querySelectorAll('#history-list .entry').length === 1), 3000);
+    await inShell(() => document.querySelector('#history-list .entry .icon').click());
+    await waitFor(() => !b.library.history.has(`${base}/second-page`), 3000);
+    await inShell(() => {
+      const input = document.getElementById('library-search');
+      input.value = '';
+      input.dispatchEvent(new Event('input'));
+    });
+    await waitFor(() => inShell(() => !document.getElementById('history-clear').hidden), 3000);
+    const before = b.library.history.size;
+    assert.ok(before > 0);
+    await inShell(() => document.getElementById('history-clear').click());
+    await sleep(200);
+    assert.equal(b.library.history.size, before, 'first click only asks');
+    await inShell(() => document.getElementById('history-clear').click());
+    await waitFor(() => b.library.history.size === 0, 3000);
+    await shellEval('togglePanel(openPanel)');
+  });
+
+  await check('history: can be turned off', async () => {
+    b.updateSettings({ saveHistory: false });
+    await load(`${base}/private-page`);
+    await sleep(200);
+    assert.ok(!b.library.history.has(`${base}/private-page`));
+    b.updateSettings({ saveHistory: true });
+  });
+
+  await check('bookmarks: star adds with a stored icon, shows in the bar, star removes', async () => {
+    await load(`${base}/ads?bookmarked=1`);
+    await waitFor(() => tabs.active.favicon, 4000);
+    const beforeBounds = tab.view.getBounds();
+    await inShell(() => document.getElementById('star-btn').click());
+    await waitFor(() => b.library.bookmarks.length === 1, 3000);
+    await waitFor(() => b.library.bookmarks[0].icon.startsWith('data:image/'), 4000);
+    assert.equal(b.library.bookmarks[0].title, 'Tern test page');
+    await waitFor(() => inShell(() => document.getElementById('star-btn').classList.contains('on')), 3000);
+    await waitFor(() => inShell(() => !document.getElementById('bookmarks-bar').hidden), 3000);
+    await sleep(300);
+    assert.ok(tab.view.getBounds().y > beforeBounds.y, 'page moved down for the bar');
+    await shot(shell, '10-bookmarks-bar');
+    await inShell(() => document.getElementById('star-btn').click());
+    await waitFor(() => b.library.bookmarks.length === 0, 3000);
+    await sleep(300);
+    assert.deepEqual(tab.view.getBounds(), beforeBounds, 'bar gone, page back');
+  });
+
+  await check('bookmarks: Ctrl+D from a page, open from the bar, rename, reorder, survive a restart', async () => {
+    wc().focus();
+    await sleep(100);
+    wc().sendInputEvent({ type: 'keyDown', keyCode: 'd', modifiers: ['control'] });
+    wc().sendInputEvent({ type: 'keyUp', keyCode: 'd', modifiers: ['control'] });
+    await waitFor(() => b.library.bookmarks.length === 1, 3000);
+    const first = b.library.bookmarks[0];
+    await load(`${base}/other-page`);
+    await inShell(() => document.getElementById('star-btn').click());
+    await waitFor(() => b.library.bookmarks.length === 2, 3000);
+    await sleep(200);
+    await inShell(() => document.querySelector('#bookmarks-bar .bookmark-chip').click());
+    await waitFor(() => tab.url === first.url && !tab.loading, 4000);
+    await shellEval("showPanel('library', 'bookmarks')");
+    await waitFor(() => inShell(() => document.querySelectorAll('#bookmark-list .entry').length === 2), 3000);
+    await shot(shell, '11-bookmarks-panel');
+    b.library.renameBookmark(first.id, 'Renamed <b>bookmark</b>');
+    await waitFor(() => inShell(() => document.querySelector('#bookmarks-bar .bookmark-chip > span:last-child').textContent === 'Renamed <b>bookmark</b>'), 3000);
+    assert.equal(await inShell(() => document.querySelector('#bookmarks-bar b')), null, 'names are text, never markup');
+    b.library.moveBookmark(first.id, 1);
+    assert.equal(b.library.bookmarks[1].id, first.id);
+    b.flushAll();
+    const reopened = new Library(profile);
+    assert.deepEqual(reopened.bookmarks.map((x) => x.url), b.library.bookmarks.map((x) => x.url));
+    assert.equal(reopened.bookmarks[1].title, 'Renamed <b>bookmark</b>');
+    await shellEval('togglePanel(openPanel)');
+  });
+
+  await check('library files: damaged data is ignored and unsafe addresses are dropped', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tern-lib-'));
+    fs.writeFileSync(path.join(dir, 'bookmarks.json'), JSON.stringify([
+      { url: 'javascript:alert(1)', title: 'bad' },
+      { url: 'file:///C:/x', title: 'bad' },
+      { url: 'https://good.example/', title: 'good', icon: 'https://not-inline.example/x.png' },
+      { url: 'https://good.example/', title: 'duplicate' },
+    ]));
+    fs.writeFileSync(path.join(dir, 'history.json'), '{ not json');
+    const lib = new Library(dir);
+    assert.deepEqual(lib.bookmarks.map((x) => x.url), ['https://good.example/']);
+    assert.equal(lib.bookmarks[0].icon, '');
+    assert.equal(lib.history.size, 0);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('suggestions: ranks matches, and bookmarks are included', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tern-lib-'));
+    const lib = new Library(dir);
+    lib.recordVisit('https://news.example.org/a', 'Some story');
+    lib.recordVisit('https://example.org/news', 'Other');
+    lib.toggleBookmark({ url: 'https://docs.example.org/news-guide', title: 'Guide' });
+    assert.equal(lib.suggest('news.ex')[0].url, 'https://news.example.org/a', 'address starting with the text wins');
+    assert.equal(lib.suggest('news')[0].url, 'https://news.example.org/a');
+    assert.equal(lib.suggest('guide')[0].kind, 'bookmark');
+    assert.deepEqual(lib.suggest('zzzz'), []);
+    assert.deepEqual(lib.suggest('   '), []);
+    lib.flush();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('suggestions: list appears above the page, keys select, Enter opens it, Esc hides it', async () => {
+    await load(`${base}/ads?suggest-target=1`);
+    await waitFor(() => b.library.history.has(`${base}/ads?suggest-target=1`), 3000);
+    await load(`${base}/other-page`);
+    const typeInto = (text) => shellEval(`(() => {
+      const input = document.getElementById('address-input');
+      input.focus();
+      input.value = ${JSON.stringify(text)};
+      input.dispatchEvent(new Event('input'));
+    })()`);
+    await typeInto('suggest-target');
+    await waitFor(() => inShell(() => suggestions.length >= 2), 3000);
+    assert.equal(b.suggestionsVisible(), true);
+    const overlay = win.contentView.children.at(-1).webContents;
+    await sleep(500);
+    assert.ok(overlay.getURL().endsWith('suggest.html'), 'on top of the page');
+    assert.equal(await overlay.executeJavaScript("document.querySelector('.row .title').textContent"), 'suggest-target');
+    assert.equal(await overlay.executeJavaScript("document.querySelectorAll('.row').length"), 2);
+    await shot(overlay, '12-suggestions');
+
+    await inShell(() => document.getElementById('address-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })));
+    await waitFor(() => inShell(() => document.getElementById('address-input').value.includes('suggest-target=1')), 2000);
+    await sleep(200);
+    assert.equal(await overlay.executeJavaScript("[...document.querySelectorAll('.row')].findIndex((r) => r.classList.contains('on'))"), 1);
+    await inShell(() => document.getElementById('address-input').form.requestSubmit());
+    await waitFor(() => tab.url.includes('suggest-target=1') && !tab.loading, 4000);
+    assert.equal(b.suggestionsVisible(), false, 'gone after opening');
+    await waitFor(() => inShell(() => document.getElementById('address-input').value.includes('/ads?suggest-target=1')), 2000);
+
+    await typeInto('suggest-target');
+    await waitFor(() => b.suggestionsVisible(), 3000);
+    await inShell(() => document.getElementById('address-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    await waitFor(() => !b.suggestionsVisible(), 2000);
+
+    await load(`${base}/other-page`);
+    await typeInto('suggest-target');
+    await waitFor(() => inShell(() => suggestions.length >= 2), 3000);
+    await sleep(300);
+    await overlay.executeJavaScript("document.querySelectorAll('.row')[1].dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))");
+    await waitFor(() => tab.url.includes('suggest-target=1') && !b.suggestionsVisible(), 4000);
+    await waitFor(() => inShell(() => document.getElementById('address-input').value.includes('/ads?suggest-target=1')), 2000);
+  });
+
+  await check('suggestions: pages cannot reach the suggestions channel', async () => {
+    const leaked = await wc().executeJavaScript("['ternSuggest', 'tern'].filter((n) => n in window)");
+    assert.deepEqual(leaked, []);
+  });
+
+  const lastDownload = () => b.downloads.list()[0];
+  await check('downloads: saves to the Downloads folder, marked as coming from the internet', async () => {
+    await load(`${base}/ads`);
+    const count = b.downloads.list().length;
+    await wc().executeJavaScript("document.getElementById('file-link').click()", true);
+    await waitFor(() => b.downloads.list().length === count + 1 && lastDownload().state === 'completed', 6000);
+    const d = lastDownload();
+    assert.equal(path.dirname(d.path), downloadDir);
+    assert.equal(fs.readFileSync(d.path, 'utf8'), 'hello from the test server');
+    assert.equal(tab.url, `${base}/ads`, 'the tab stays on its page');
+    assert.ok(tab.blocked >= 3, 'the blocked count survives the click');
+    const zone = fs.readFileSync(`${d.path}:Zone.Identifier`, 'utf8');
+    assert.match(zone, /ZoneId=3/);
+    assert.ok(zone.includes(`${base}/report.txt`));
+    return path.basename(d.path);
+  });
+
+  await check('downloads: a second copy gets a new name instead of overwriting', async () => {
+    await wc().executeJavaScript("document.getElementById('file-link').click()", true);
+    await waitFor(() => lastDownload().filename === 'report (1).txt' && lastDownload().state === 'completed', 6000);
+    assert.equal(fs.readdirSync(downloadDir).length, 2);
+  });
+
+  await check('downloads: a link in a new tab saves the file and closes the empty tab', async () => {
+    const tabCount = tabs.tabs.length;
+    await wc().executeJavaScript("document.getElementById('popup-file').click()", true);
+    await waitFor(() => lastDownload().filename === 'popup.txt' && lastDownload().state === 'completed', 6000);
+    await waitFor(() => tabs.tabs.length === tabCount, 3000);
+    assert.equal(fs.readFileSync(lastDownload().path, 'utf8'), 'hello from the test server');
+    tabs.activate(tab.id);
+  });
+
+  await check('downloads: typing a file address saves it and the tab recovers', async () => {
+    const fresh = tabs.create();
+    tabs.navigate(fresh.id, `${base}/report.txt?typed=1`);
+    await waitFor(() => lastDownload().filename === 'report (2).txt' && lastDownload().state === 'completed', 6000);
+    await waitFor(() => fresh.url === '', 3000);
+    assert.equal(fs.readFileSync(lastDownload().path, 'utf8'), 'hello from the test server');
+    tabs.close(fresh.id);
+    tabs.activate(tab.id);
+  });
+
+  await check('downloads panel: pause and resume work through the buttons', async () => {
+    await shellEval("showPanel('downloads')");
+    wc().downloadURL(`${base}/slow.bin`);
+    await waitFor(() => lastDownload().filename === 'slow.bin' && lastDownload().received > 0, 6000);
+    await waitFor(() => inShell(() => document.querySelector('#download-list [data-action="pause"]') !== null), 3000);
+    assert.equal(await inShell(() => document.querySelector('#downloads-btn .badge').textContent), '1');
+    await shot(shell, '13-downloads-panel');
+    await inShell(() => document.querySelector('#download-list [data-action="pause"]').click());
+    await waitFor(() => lastDownload().paused, 3000);
+    await waitFor(() => inShell(() => document.querySelector('#download-list [data-action="resume"]') !== null), 3000);
+    await inShell(() => document.querySelector('#download-list [data-action="resume"]').click());
+    await waitFor(() => lastDownload().state === 'completed', 15000);
+    assert.equal(fs.statSync(lastDownload().path).size, 40 * 64 * 1024);
+    await waitFor(() => inShell(() => document.querySelector('#download-list [data-action="open"]') !== null), 3000);
+  });
+
+  await check('downloads panel: cancel stops it and leaves no partial file behind', async () => {
+    wc().downloadURL(`${base}/slow.bin?again=1`);
+    await waitFor(() => lastDownload().filename === 'slow (1).bin' && lastDownload().received > 0, 6000);
+    const file = lastDownload().path;
+    await waitFor(() => inShell(() => document.querySelector('#download-list [data-action="cancel"]') !== null), 3000);
+    await inShell(() => document.querySelector('#download-list [data-action="cancel"]').click());
+    await waitFor(() => lastDownload().state === 'cancelled', 4000);
+    await sleep(300);
+    assert.equal(fs.existsSync(file), false);
+    assert.equal(b.downloads.activeCount, 0);
+  });
+
+  await check('downloads: Open warns first for programs, and a moved file is noticed', async () => {
+    assert.equal(isRisky('setup.EXE'), true);
+    assert.equal(isRisky('run.ps1'), true);
+    assert.equal(isRisky('photo.jpg'), false);
+    const opened = [];
+    const asked = [];
+    const realOpen = b.downloads.openPath;
+    const realConfirm = b.downloads.confirmOpen;
+    b.downloads.openPath = async (file) => opened.push(file);
+    b.downloads.confirmOpen = async (entry) => {
+      asked.push(entry.filename);
+      return false;
+    };
+    const plain = b.downloads.list().find((d) => d.filename === 'report.txt');
+    await b.downloads.action(plain.id, 'open');
+    assert.deepEqual(opened, [plain.path], 'a text file opens without a warning');
+    assert.deepEqual(asked, []);
+    const copy = `${plain.path}.exe`;
+    fs.copyFileSync(plain.path, copy);
+    const realPath = plain.path;
+    plain.path = copy;
+    await b.downloads.action(plain.id, 'open');
+    assert.deepEqual(asked, ['report.txt'], 'a program asks first');
+    assert.equal(opened.length, 1, 'declining means it does not open');
+    plain.path = realPath;
+    fs.rmSync(realPath);
+    await b.downloads.action(plain.id, 'open');
+    assert.equal(plain.missing, true);
+    assert.equal(opened.length, 1);
+    b.downloads.openPath = realOpen;
+    b.downloads.confirmOpen = realConfirm;
+    await waitFor(() => inShell(() => document.getElementById('download-list').textContent.includes('File moved or deleted')), 3000);
+  });
+
+  await check('downloads: the list survives a restart, and clearing keeps the files', async () => {
+    b.flushAll();
+    const saved = JSON.parse(fs.readFileSync(path.join(profile, 'downloads.json'), 'utf8'));
+    assert.ok(saved.some((d) => d.filename === 'slow.bin' && d.state === 'completed'));
+    const keep = b.downloads.list().find((d) => d.filename === 'slow.bin').path;
+    await inShell(() => document.getElementById('downloads-clear').click());
+    await waitFor(() => b.downloads.list().length === 0, 3000);
+    assert.equal(fs.existsSync(keep), true);
+    await waitFor(() => inShell(() => !document.getElementById('downloads-empty').hidden), 3000);
+    await shellEval('togglePanel(openPanel)');
+  });
+
+  await check('open tabs are saved for the next launch', async () => {
+    b.flushAll();
+    tabs.create(`${base}/second`, { activate: false });
+    await sleep(100);
+    fs.mkdirSync(profile, { recursive: true });
+    const saved = tabs.serialize();
+    assert.equal(saved.tabs.length, tabs.tabs.filter((t) => t.url).length);
+    assert.ok(saved.tabs.some((t) => t.url.endsWith('/second')));
+    tabs.close(tabs.tabs.at(-1).id);
+  });
+
+  const pageMemory = await measureMemory();
+
+  let live = null;
+  if (process.env.TERN_LIVE) {
+    await check('live: a real ad-heavy news site', async () => {
+      const site = tabs.create('https://www.speedtest.net/');
+      await waitFor(() => site.view && !site.loading, 45000);
+      await sleep(5000);
+      live = site.blocked;
+      await shot(site.view.webContents, '07-live-site');
+      assert.ok(site.blocked > 0, 'nothing blocked');
+      return `${site.blocked} requests blocked`;
+    });
+    await check('live: built-in AI APIs absent on a secure https page', async () => {
+      const present = await tabs.active.view.webContents.executeJavaScript(
+        "['LanguageModel','Summarizer','Writer','Rewriter','Proofreader','Translator','LanguageDetector','ai'].filter((n) => n in window)",
+      );
+      assert.deepEqual(present, []);
+    });
+  }
+
+  await check('no AI: no on-device model folders were created', () => {
+    const found = [];
+    const walk = (dir, depth = 0) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (/OptGuide|OnDeviceModel|optimization_guide|GenAI|Gemini/i.test(entry.name)) found.push(entry.name);
+        if (entry.isDirectory() && depth < 4) walk(path.join(dir, entry.name), depth + 1);
+      }
+    };
+    walk(profile);
+    assert.deepEqual(found, []);
+  });
+
+  console.log(`\nStartup to ready window: ${startMs} ms`);
+  console.log(`Memory with one empty new tab: ${idleMemory}`);
+  console.log(`Memory with one simple page:   ${pageMemory}`);
+  if (live !== null) console.log(`Blocked on live site: ${live}`);
+  console.log(`Electron ${process.versions.electron}, Chromium ${process.versions.chrome}`);
+
+  win.close();
+  server.close();
+  const failed = results.filter((r) => !r.ok);
+  console.log(`\n${results.length - failed.length}/${results.length} passed`);
+  setTimeout(() => {
+    try {
+      fs.rmSync(profile, { recursive: true, force: true, maxRetries: 3 });
+    } catch {
+      // Windows can keep profile files locked for a moment. It's only a temp folder.
+    }
+    app.exit(failed.length ? 1 : 0);
+  }, 500);
+}
+
+app.on('window-all-closed', () => {});
+main().catch((error) => {
+  console.error(error);
+  app.exit(1);
+});

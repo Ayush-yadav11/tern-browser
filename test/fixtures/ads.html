@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Tern test page</title>
+<link rel="icon" href="/ok.gif">
+<style>body { font: 16px sans-serif; margin: 2em; } .box { padding: 1em; margin: 1em 0; background: #ffd9d9; }</style>
+<h1>Tern ad-block test page</h1>
+<p id="content">Normal content stays visible.</p>
+<div class="box ad-slot" id="cosmetic-1">.ad-slot: should be hidden</div>
+<div class="box ad_box" id="cosmetic-2">.ad_box: should be hidden</div>
+<div class="box" id="control">Control box: should stay visible</div>
+<script>
+  window.results = {};
+  const probe = (name, url) => new Promise((resolve) => {
+    const img = new Image();
+    const timer = setTimeout(() => resolve('timeout'), 8000);
+    const done = (value) => { clearTimeout(timer); window.results[name] = value; resolve(value); };
+    img.onload = () => done('loaded');
+    img.onerror = () => done('error');
+    img.src = url;
+  });
+  window.ready = Promise.all([
+    probe('doubleclick', 'https://securepubads.g.doubleclick.net/pagead/ad.gif?x=1'),
+    probe('analytics', 'https://www.google-analytics.com/collect?v=1'),
+    probe('adsense', 'https://pagead2.googlesyndication.com/pagead/show_ads.gif'),
+    probe('control', '/ok.gif'),
+  ]);
+</script>
+<p><a id="file-link" href="/report.txt">Plain download</a> <a id="popup-file" href="/popup.txt" target="_blank">Download in a new tab</a></p>

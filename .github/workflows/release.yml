@@ -1,0 +1,61 @@
+name: Weekly release
+
+on:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - run: npm ci
+      - id: prepare
+        run: node scripts/prepare-release.js
+      - if: steps.prepare.outputs.release == 'true'
+        run: npm run update-filters
+      # Nothing below publishes unless every one of these passes.
+      - if: steps.prepare.outputs.release == 'true'
+        run: npm test
+      - if: steps.prepare.outputs.release == 'true'
+        run: npm run package
+      - if: steps.prepare.outputs.release == 'true'
+        run: npm run test:packaged
+      - if: steps.prepare.outputs.release == 'true'
+        run: npm run test:update
+      - if: steps.prepare.outputs.release == 'true'
+        run: npm run installer
+      - if: steps.prepare.outputs.release == 'true'
+        name: Record the version
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add package.json package-lock.json assets/engine.bin
+          git diff --cached --quiet || git commit -m "Release v${{ steps.prepare.outputs.version }}"
+          git push
+      - if: steps.prepare.outputs.release == 'true'
+        name: Publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.prepare.outputs.version }}
+          NOTES: ${{ steps.prepare.outputs.notes }}
+        run: |
+          cd out/installer
+          gh release create "v$VERSION" "Tern-Setup-$VERSION.exe" "Tern-Setup-$VERSION.exe.blockmap" latest.yml \
+            --target "$(git rev-parse HEAD)" --title "Tern $VERSION" --notes "$NOTES"
