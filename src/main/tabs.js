@@ -9,12 +9,15 @@ const MAX_CLOSED = 20;
 // A tab only owns a renderer while it is awake. New tabs and sleeping tabs have
 // view === null, and the shell draws whatever belongs in the content area instead.
 class Tabs extends EventEmitter {
-  constructor({ window, session, onShortcut, getSleepMinutes }) {
+  constructor({ window, session, torSession, onShortcut, getSleepMinutes, getWebRtcPolicy }) {
     super();
     this.window = window;
     this.session = session;
     this.onShortcut = onShortcut;
     this.getSleepMinutes = getSleepMinutes;
+    this.torSession = torSession;
+    this.torReady = false;
+    this.getWebRtcPolicy = getWebRtcPolicy;
     this.tabs = [];
     this.activeId = null;
     this.nextId = 1;
@@ -44,7 +47,9 @@ class Tabs extends EventEmitter {
         id: t.id,
         url: t.url,
         title: t.title,
-        favicon: t.favicon,
+        // The interface fetches favicons itself, which wouldn't go through Tor.
+        favicon: t.tor && !t.favicon.startsWith('data:') ? '' : t.favicon,
+        tor: t.tor,
         loading: t.loading,
         canBack: Boolean(t.view?.webContents.navigationHistory.canGoBack()),
         canForward: Boolean(t.view?.webContents.navigationHistory.canGoForward()),
@@ -60,9 +65,10 @@ class Tabs extends EventEmitter {
     this.emit('changed');
   }
 
-  create(url = '', { activate = true, title = '', index, openedByPage = false } = {}) {
+  create(url = '', { activate = true, title = '', index, openedByPage = false, tor = false } = {}) {
     const tab = {
       openedByPage,
+      tor,
       id: this.nextId++,
       url: isWebUrl(url) ? url : '',
       title,
@@ -91,8 +97,20 @@ class Tabs extends EventEmitter {
     }
     this.activeId = id;
     tab.lastActive = Date.now();
-    if (tab.url && !tab.view && !tab.error) this.wake(tab);
+    if (this.canLoad(tab) && tab.url && !tab.view && !tab.error) this.wake(tab);
     this.attach(tab);
+    this.changed();
+  }
+
+  // A Tor tab loads nothing at all until Tor is connected.
+  canLoad(tab) {
+    return !tab.tor || this.torReady;
+  }
+
+  setTorReady(ready) {
+    this.torReady = ready;
+    const tab = this.active;
+    if (ready && tab?.tor && tab.url && !tab.view) this.wake(tab);
     this.changed();
   }
 
@@ -140,12 +158,13 @@ class Tabs extends EventEmitter {
     const index = this.tabs.findIndex((t) => t.id === id);
     if (index < 0) return;
     const tab = this.tabs[index];
-    if (tab.url) {
+    if (tab.url && !tab.tor) {
       this.closed.push({ url: tab.url, title: tab.title, index });
       if (this.closed.length > MAX_CLOSED) this.closed.shift();
     }
     this.destroyView(tab);
     this.tabs.splice(index, 1);
+    if (tab.tor && !this.tabs.some((t) => t.tor)) this.emit('last-tor-tab-closed');
     if (this.tabs.length === 0) {
       this.emit('empty');
       return;
@@ -183,6 +202,10 @@ class Tabs extends EventEmitter {
     tab.url = url;
     tab.error = null;
     tab.history = null;
+    if (!this.canLoad(tab)) {
+      this.changed();
+      return;
+    }
     if (!tab.view) this.createView(tab);
     this.attach(tab);
     tab.view.webContents.loadURL(url).catch(() => {});
@@ -269,7 +292,7 @@ class Tabs extends EventEmitter {
   createView(tab) {
     const view = new WebContentsView({
       webPreferences: {
-        session: this.session,
+        session: tab.tor ? this.torSession : this.session,
         sandbox: true,
         contextIsolation: true,
         nodeIntegration: false,
@@ -278,6 +301,7 @@ class Tabs extends EventEmitter {
       },
     });
     view.setBackgroundColor('#ffffff');
+    view.webContents.setWebRTCIPHandlingPolicy(tab.tor ? 'disable_non_proxied_udp' : this.getWebRtcPolicy());
     tab.view = view;
     this.wire(tab, view.webContents);
     return view;
@@ -288,7 +312,7 @@ class Tabs extends EventEmitter {
     const isCurrent = () => tab.view?.webContents === wc;
 
     wc.setWindowOpenHandler(({ url, disposition }) => {
-      if (isWebUrl(url)) this.create(url, { activate: disposition !== 'background-tab', openedByPage: true });
+      if (isWebUrl(url)) this.create(url, { activate: disposition !== 'background-tab', openedByPage: true, tor: tab.tor });
       return { action: 'deny' };
     });
     const guard = (event, url) => {
@@ -315,14 +339,14 @@ class Tabs extends EventEmitter {
         if (hostOf(url) !== tab.faviconHost) tab.favicon = '';
         tab.faviconHost = hostOf(url);
         tab.url = url;
-        this.emit('visit', url, '');
+        if (!tab.tor) this.emit('visit', url, '');
       }
       update();
     });
     wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {
       if (isMainFrame && isWebUrl(url)) {
         tab.url = url;
-        this.emit('visit', url, '');
+        if (!tab.tor) this.emit('visit', url, '');
       }
       update();
     });
@@ -336,7 +360,7 @@ class Tabs extends EventEmitter {
     });
     wc.on('page-title-updated', (_e, title) => {
       tab.title = title;
-      this.emit('title', tab.url, title);
+      if (!tab.tor) this.emit('title', tab.url, title);
       update();
     });
     wc.on('page-favicon-updated', (_e, favicons) => {
@@ -384,14 +408,14 @@ class Tabs extends EventEmitter {
     const items = [];
     if (isWebUrl(p.linkURL)) {
       items.push(
-        { label: 'Open link in new tab', click: () => this.create(p.linkURL, { activate: false }) },
+        { label: 'Open link in new tab', click: () => this.create(p.linkURL, { activate: false, tor: tab.tor }) },
         { label: 'Copy link address', click: () => clipboard.writeText(p.linkURL) },
         { type: 'separator' },
       );
     }
     if (p.mediaType === 'image' && isWebUrl(p.srcURL)) {
       items.push(
-        { label: 'Open image in new tab', click: () => this.create(p.srcURL, { activate: false }) },
+        { label: 'Open image in new tab', click: () => this.create(p.srcURL, { activate: false, tor: tab.tor }) },
         { label: 'Save image as…', click: () => wc.downloadURL(p.srcURL) },
         { type: 'separator' },
       );
@@ -411,8 +435,14 @@ class Tabs extends EventEmitter {
     Menu.buildFromTemplate(items).popup({ window: this.window });
   }
 
+  applyWebRtcPolicy() {
+    for (const tab of this.tabs) {
+      if (tab.view && !tab.tor) tab.view.webContents.setWebRTCIPHandlingPolicy(this.getWebRtcPolicy());
+    }
+  }
+
   serialize() {
-    const saved = this.tabs.filter((t) => t.url);
+    const saved = this.tabs.filter((t) => t.url && !t.tor);
     return {
       activeIndex: Math.max(0, saved.findIndex((t) => t.id === this.activeId)),
       tabs: saved.map((t) => ({ url: t.url, title: t.title })),

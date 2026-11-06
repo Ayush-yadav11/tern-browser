@@ -1,14 +1,15 @@
 'use strict';
 
 const path = require('node:path');
-const { app, BaseWindow, Menu, WebContentsView, dialog, ipcMain, session, shell: electronShell } = require('electron');
+const { app, BaseWindow, Menu, WebContentsView, dialog, ipcMain, safeStorage, session, shell: electronShell } = require('electron');
 const { applyFlags } = require('./flags');
 const { AdBlock } = require('./adblock');
 const { Downloads } = require('./downloads');
 const { Library } = require('./library');
 const { Tabs } = require('./tabs');
+const { Tor, torPath } = require('./tor');
 const { Updater } = require('./updater');
-const { DEFAULTS, clean, JsonFile } = require('./settings');
+const { DEFAULTS, PROXY_SERVER, clean, JsonFile } = require('./settings');
 const { SEARCH_ENGINES, hostOf, isWebUrl, resolveInput } = require('./url');
 
 applyFlags(app);
@@ -27,7 +28,10 @@ const ASK_PERMISSIONS = {
 // refuse unknown browsers. Tern still sends the real Chromium version it runs on.
 const cleanUserAgent = (ua) => ua.replace(/\s(?:Tern|tern-browser|Electron)\/\S+/g, '');
 
-function configureTabSession(ses, getWindow) {
+// Nothing listens here. A session pointed at it reaches nothing instead of going direct.
+const NOWHERE = { proxyRules: 'socks5://127.0.0.1:1', proxyBypassRules: '<-loopback>' };
+
+function configureTabSession(ses, getWindow, { canAsk = true } = {}) {
   const grants = new Map();
   const originOf = (url) => {
     try {
@@ -45,7 +49,7 @@ function configureTabSession(ses, getWindow) {
     if (SAFE_PERMISSIONS.has(permission)) return callback(true);
     const purpose = ASK_PERMISSIONS[permission];
     const origin = originOf(details.requestingUrl ?? wc.getURL());
-    if (!purpose || !origin) return callback(false);
+    if (!purpose || !origin || !canAsk) return callback(false);
     const key = `${origin}|${permission}`;
     if (grants.has(key)) return callback(grants.get(key));
     const { response } = await dialog.showMessageBox(getWindow(), {
@@ -110,6 +114,11 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
 
   const tabSession = session.fromPartition('persist:tern');
   configureTabSession(tabSession, () => win);
+  // Kept in memory only, and pointed nowhere before anything can load in it.
+  const torSession = session.fromPartition('tern-tor');
+  await torSession.setProxy(NOWHERE);
+  configureTabSession(torSession, () => win, { canAsk: false });
+  const tor = new Tor({ exePath: torPath(app), dataDir: path.join(profile, 'tor') });
 
   const send = (channel, payload) => {
     if (!shell.isDestroyed()) shell.send(channel, payload);
@@ -125,7 +134,8 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
       send('tern:state', {
         ...tabs.publicState(),
         fullscreen: tabs.fullscreen,
-        settings,
+        settings: visibleSettings(),
+        tor: tor.state,
         about: { version: app.getVersion(), chromium: process.versions.chrome },
         update: updater.state,
         shield: {
@@ -138,6 +148,12 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
       });
       if (!win.isDestroyed()) win.setTitle(active?.title ? `${active.title} - Tern` : 'Tern');
     }, 16);
+  };
+
+  // The stored password never goes to the interface, which only needs to know one is set.
+  const visibleSettings = () => {
+    const { proxyPassword, ...visible } = settings;
+    return { ...visible, proxyHasPassword: Boolean(proxyPassword) };
   };
 
   const saveSession = () => sessionFile.write(tabs.serialize());
@@ -155,6 +171,7 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     const combo = `${ctrl ? 'c' : ''}${input.shift ? 's' : ''}${input.alt ? 'a' : ''}+${key}`;
     const id = tabs.activeId;
     const actions = {
+      'cs+n': () => openTorTab(),
       'c+t': () => {
         tabs.create();
         focusAddress();
@@ -201,8 +218,10 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
   const tabs = new Tabs({
     window: win,
     session: tabSession,
+    torSession,
     onShortcut: shortcut,
     getSleepMinutes: () => settings.sleepMinutes,
+    getWebRtcPolicy: () => (settings.proxyEnabled ? 'disable_non_proxied_udp' : 'default_public_interface_only'),
   });
 
   let blockedSinceSave = 0;
@@ -226,6 +245,51 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
 
   const updater = new Updater({ isAutomatic: () => settings.autoUpdate });
   updater.on('changed', pushState);
+
+  adblock.attach(torSession);
+
+  const openTorTab = () => {
+    tabs.create('', { tor: true });
+    tor.start();
+    focusAddress();
+  };
+  const useTorPort = async (port) => {
+    await torSession.setProxy({ proxyRules: `socks5://127.0.0.1:${port}`, proxyBypassRules: '<-loopback>' });
+    await torSession.closeAllConnections();
+    tabs.setTorReady(true);
+  };
+  tor.on('changed', pushState);
+  tor.on('ready', () => useTorPort(tor.port).catch(() => tor.stop()));
+  tor.on('lost', () => tabs.setTorReady(false));
+  // Closing the last Tor tab ends that identity: cookies, cache and all.
+  tabs.on('last-tor-tab-closed', () => {
+    tor.stop();
+    tabs.setTorReady(false);
+    torSession.setProxy(NOWHERE)
+      .then(() => torSession.clearStorageData())
+      .then(() => torSession.clearCache())
+      .catch(() => {});
+  });
+
+  // A proxy that's on but unreachable fails the page rather than going direct.
+  const applyProxy = async () => {
+    const config = settings.proxyEnabled
+      ? { proxyRules: settings.proxyServer || NOWHERE.proxyRules, proxyBypassRules: '<-loopback>' }
+      : { mode: 'direct' };
+    for (const ses of [tabSession, session.defaultSession]) {
+      await ses.setProxy(config);
+      await ses.closeAllConnections();
+    }
+    tabs.applyWebRtcPolicy();
+  };
+  await applyProxy();
+  const onLogin = (event, _contents, _details, authInfo, callback) => {
+    if (!authInfo.isProxy || !settings.proxyUsername) return;
+    event.preventDefault();
+    const password = settings.proxyPassword ? safeStorage.decryptString(Buffer.from(settings.proxyPassword, 'base64')) : '';
+    callback(settings.proxyUsername, password);
+  };
+  app.on('login', onLogin);
 
   const library = new Library(profile);
   const pushBookmarks = () => send('tern:bookmarks', library.bookmarks);
@@ -256,7 +320,8 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     const tab = tabs.active;
     if (!tab?.url) return;
     const added = library.toggleBookmark({ url: tab.url, title: tab.title });
-    if (added) fetchBookmarkIcon(added, tab.favicon).catch(() => {});
+    // Fetching a Tor tab's icon here would go around Tor.
+    if (added && !tab.tor) fetchBookmarkIcon(added, tab.favicon).catch(() => {});
   };
 
   const downloads = new Downloads({
@@ -280,6 +345,7 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     },
   });
   const pushDownloads = () => send('tern:downloads', downloads.list());
+  downloads.attachPrivate(torSession);
   downloads.on('changed', pushDownloads);
   downloads.on('started', () => send('tern:download-started'));
 
@@ -375,11 +441,38 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
       pushBookmarks();
       pushDownloads();
     },
+    'tern:new-tor-tab': () => openTorTab(),
+    'tern:tor-retry': () => tor.start(),
+    'tern:set-proxy': async ({ enabled, server, username = '', password } = {}) => {
+      const text = String(server ?? '').trim();
+      if (enabled && !PROXY_SERVER.test(text)) return { ok: false, message: 'Enter the server like socks5://host:1080 or http://host:8080' };
+      if (username && !/^https?:/i.test(text)) return { ok: false, message: "Usernames only work with http:// proxies. Chromium can't send them to SOCKS proxies." };
+      const patch = { proxyEnabled: Boolean(enabled), proxyServer: text, proxyUsername: String(username) };
+      if (typeof password === 'string' && password) {
+        if (!safeStorage.isEncryptionAvailable()) return { ok: false, message: "Windows can't store the password securely here." };
+        patch.proxyPassword = safeStorage.encryptString(password).toString('base64');
+      } else if (!username) {
+        patch.proxyPassword = '';
+      }
+      update(patch);
+      await applyProxy();
+      return { ok: true };
+    },
+    // Contacts ipify only when asked, to show what websites currently see.
+    'tern:check-ip': async () => {
+      const ses = tabs.active?.tor ? torSession : tabSession;
+      try {
+        const response = await ses.fetch('https://api.ipify.org?format=json');
+        return { ip: (await response.json()).ip };
+      } catch {
+        return { error: "Couldn't check right now." };
+      }
+    },
     'tern:update-check': () => updater.check(),
     'tern:update-install': () => updater.install(),
     'tern:open': (url, options) => {
       if (!isWebUrl(url)) return;
-      if (options?.newTab) tabs.create(url, { activate: !options.background });
+      if (options?.newTab) tabs.create(url, { activate: !options.background, tor: Boolean(tabs.active?.tor) });
       else tabs.navigate(tabs.activeId, url);
     },
     'tern:toggle-bookmark': () => toggleBookmark(),
@@ -437,12 +530,12 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
       }
     },
     'tern:settings': (patch) => {
-      const { totalBlocked, allowedSites, ...safe } = patch ?? {};
+      const { totalBlocked, allowedSites, proxyEnabled, proxyServer, proxyUsername, proxyPassword, ...safe } = patch ?? {};
       update(safe);
     },
     'tern:reset-settings': () => {
-      const { adblock: on, allowedSites, totalBlocked, saveHistory, askDownloadPath, autoUpdate } = settings;
-      settings = clean({ adblock: on, allowedSites, totalBlocked, saveHistory, askDownloadPath, autoUpdate }, DEFAULTS);
+      const { adblock: on, allowedSites, totalBlocked, saveHistory, askDownloadPath, autoUpdate, proxyEnabled, proxyServer, proxyUsername, proxyPassword } = settings;
+      settings = clean({ adblock: on, allowedSites, totalBlocked, saveHistory, askDownloadPath, autoUpdate, proxyEnabled, proxyServer, proxyUsername, proxyPassword }, DEFAULTS);
       settingsFile.write(settings);
       pushState();
     },
@@ -527,12 +620,14 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     flushAll();
     destroySuggestions();
     updater.dispose();
+    tor.stop();
     tabs.dispose();
   });
   win.on('closed', () => {
     for (const channel of Object.keys(handlers)) ipcMain.removeHandler(channel);
     ipcMain.removeHandler('tern:suggest-pick');
     ipcMain.removeAllListeners('tern:block-youtube-ads');
+    app.removeListener('login', onLogin);
   });
 
   await shell.loadFile(path.join(SHELL_DIR, 'index.html'));
@@ -563,6 +658,10 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     library,
     downloads,
     updater,
+    tor,
+    torSession,
+    useTorPort,
+    openTorTab,
     tabSession,
     suggestionsVisible: () => Boolean(suggestView) && win.contentView.children.includes(suggestView),
     getSettings: () => settings,

@@ -13,10 +13,13 @@ const installed = () => {
   return ['electron', '@ghostery/adblocker-electron'].map((name) => `${name}@${lock[`node_modules/${name}`].version}`);
 };
 
-const before = installed();
+const torLock = () => fs.readFileSync(path.join(root, 'assets', 'tor-lock.json'), 'utf8');
+const before = [...installed(), torLock()];
 run('npm install --save-dev --no-audit --no-fund electron@latest');
 run('npm install --save --no-audit --no-fund @ghostery/adblocker-electron@latest');
-const after = installed();
+// Stops the workflow, so nothing gets published, if a new Tor's signature doesn't verify.
+run('node scripts/fetch-tor.js --update');
+const after = [...installed(), torLock()];
 const changed = before.join() !== after.join();
 
 const readVersion = () => JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
@@ -30,5 +33,6 @@ if (changed && !release) {
 }
 
 const version = readVersion();
-console.log(`${before.join(', ')} -> ${after.join(', ')}. Release: ${release ? `v${version}` : 'nothing new'}`);
-fs.appendFileSync(process.env.GITHUB_OUTPUT, `release=${release}\nversion=${version}\nnotes=Built on ${after.join(' and ')}.\n`);
+const names = (list) => list.slice(0, 2).join(', ') + ', Tor ' + JSON.parse(list[2]).version;
+console.log(`${names(before)} -> ${names(after)}. Release: ${release ? `v${version}` : 'nothing new'}`);
+fs.appendFileSync(process.env.GITHUB_OUTPUT, `release=${release}\nversion=${version}\nnotes=Built on ${names(after)}.\n`);

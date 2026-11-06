@@ -6,6 +6,7 @@ process.env.TERN_TEST = '1';
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const http = require('node:http');
+const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const { app } = require('electron');
@@ -64,6 +65,50 @@ function serve() {
     }
   });
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)));
+}
+
+// Stands in for Tor. Anything it answers is proof the page really went through the proxy,
+// and it records the host names it's asked for.
+function fakeSocks() {
+  const seen = [];
+  const page = `<!doctype html><title>through the proxy</title><p>ok<script>document.cookie = 'tor=1';</script>
+    <a id="popup" href="http://popup.invalid/" target="_blank">popup</a><link rel="icon" href="http://icon.invalid/i.png">`;
+  const server = net.createServer((socket) => {
+    socket.on('error', () => {});
+    let stage = 0;
+    socket.on('data', (data) => {
+      if (stage === 0) {
+        socket.write(Buffer.from([5, 0]));
+        stage = 1;
+      } else if (stage === 1) {
+        // Address type 3 means the host name came here unresolved, so no local DNS lookup happened.
+        const type = data[3];
+        const host = type === 3 ? data.subarray(5, 5 + data[4]).toString() : `ip:${[...data.subarray(4, 8)].join('.')}`;
+        seen.push({ type, host });
+        socket.write(Buffer.from([5, 0, 0, 1, 0, 0, 0, 0, 0, 0]));
+        stage = 2;
+      } else {
+        socket.end(`HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(page)}\r\n\r\n${page}`);
+      }
+    });
+  });
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, seen, port: server.address().port })));
+}
+
+// A password-protected web proxy, standing in for a paid proxy service.
+function fakeWebProxy(expected) {
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    if (req.headers['proxy-authorization'] !== `Basic ${Buffer.from(expected).toString('base64')}`) {
+      res.writeHead(407, { 'proxy-authenticate': 'Basic realm="test"' });
+      res.end();
+      return;
+    }
+    seen.push(req.url);
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end('<!doctype html><title>through web proxy</title><p>ok');
+  });
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, seen, port: server.address().port })));
 }
 
 const waitFor = async (fn, ms = 15000) => {
@@ -342,6 +387,140 @@ async function main() {
   });
 
   const inShell = (fn) => shellEval(`(${fn})()`);
+
+  const directHits = [];
+  server.on('request', (req) => directHits.push(req.url));
+  const socks = await fakeSocks();
+  const gatherIps = `new Promise((resolve) => {
+    const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.invalid:3478' }] });
+    const found = [];
+    pc.createDataChannel('x');
+    pc.onicecandidate = (e) => { if (e.candidate && e.candidate.candidate) found.push(e.candidate.candidate); };
+    pc.createOffer().then((o) => pc.setLocalDescription(o));
+    setTimeout(() => { pc.close(); resolve(found); }, 2500);
+  })`;
+
+  await check('Tor tab: loads nothing at all until Tor is connected', async () => {
+    const realStart = b.tor.start;
+    b.tor.start = async () => {};
+    b.openTorTab();
+    const torTab = tabs.active;
+    b.tor.start = realStart;
+    assert.equal(torTab.tor, true);
+    tabs.navigate(torTab.id, `${base}/before-tor-is-ready`);
+    await sleep(800);
+    assert.equal(torTab.view, null, 'no page exists yet');
+    assert.ok(!directHits.includes('/before-tor-is-ready'), 'nothing reached the site');
+    assert.equal(await inShell(() => document.getElementById('tor-status').hidden), false);
+    await shot(shell, '15-tor-connecting');
+    tabs.close(torTab.id);
+    tabs.activate(tab.id);
+  });
+
+  let torTab = null;
+  const torWc = () => torTab.view.webContents;
+  await check('Tor tab: traffic goes through Tor, and host names are never looked up locally', async () => {
+    const realStart = b.tor.start;
+    b.tor.start = async () => {};
+    b.openTorTab();
+    b.tor.start = realStart;
+    torTab = tabs.active;
+    await b.useTorPort(socks.port);
+    tabs.navigate(torTab.id, 'http://leak-check.invalid/page');
+    await waitFor(() => torTab.view && !torTab.loading && torTab.title === 'through the proxy', 8000);
+    assert.ok(socks.seen.some((s) => s.type === 3 && s.host === 'leak-check.invalid'));
+    assert.equal(torTab.error, null);
+    await shot(shell, '16-tor-tab');
+  });
+
+  await check('Tor tab: a page cannot reach this PC or the site directly by address', async () => {
+    const address = `http://127.0.0.1:${server.address().port}/direct-hit`;
+    await torWc().executeJavaScript(`fetch(${JSON.stringify(address)}, { mode: 'no-cors' }).catch(() => {}); new Image().src = ${JSON.stringify(`${base}/direct-image`)}; 0`);
+    await sleep(800);
+    assert.ok(!directHits.includes('/direct-hit'), 'local address went through the proxy instead');
+    assert.ok(!directHits.includes('/direct-image'));
+  });
+
+  await check('Tor tab: WebRTC gives away no IP address', async () => {
+    assert.deepEqual(await torWc().executeJavaScript(gatherIps), []);
+  });
+
+  await check('Tor tab: links stay in Tor, and nothing is saved or shared with normal tabs', async () => {
+    const count = tabs.tabs.length;
+    await torWc().executeJavaScript("document.getElementById('popup').click()", true);
+    await waitFor(() => tabs.tabs.length === count + 1, 3000);
+    assert.equal(tabs.tabs.at(-1).tor, true, 'new tab is a Tor tab too');
+    tabs.close(tabs.tabs.at(-1).id);
+    tabs.activate(torTab.id);
+    await sleep(200);
+    assert.ok(!b.library.history.has('http://leak-check.invalid/page'), 'not in history');
+    assert.ok(!tabs.serialize().tabs.some((t) => t.url.includes('leak-check')), 'not reopened next launch');
+    assert.ok((await b.torSession.cookies.get({})).length >= 1, 'cookie is in the Tor session');
+    assert.equal((await b.tabSession.cookies.get({ domain: 'leak-check.invalid' })).length, 0);
+    torTab.favicon = 'http://icon.invalid/i.png';
+    assert.equal(tabs.publicState().tabs.find((t) => t.id === torTab.id).favicon, '', 'the interface never fetches its icon');
+  });
+
+  await check('Tor tab: if Tor goes down, pages fail instead of connecting directly', async () => {
+    const unused = net.createServer();
+    await new Promise((r) => unused.listen(0, '127.0.0.1', r));
+    const deadPort = unused.address().port;
+    await new Promise((r) => unused.close(r));
+    await b.useTorPort(deadPort);
+    tabs.navigate(torTab.id, `${base}/tor-is-down`);
+    await waitFor(() => torTab.error, 8000);
+    assert.ok(!directHits.includes('/tor-is-down'), 'nothing reached the site');
+    await b.useTorPort(socks.port);
+  });
+
+  await check('Tor tab: closing the last one wipes its cookies and stops Tor', async () => {
+    const stopped = [];
+    const realStop = b.tor.stop;
+    b.tor.stop = function stop() { stopped.push(1); return realStop.call(this); };
+    tabs.close(torTab.id);
+    b.tor.stop = realStop;
+    tabs.activate(tab.id);
+    assert.equal(stopped.length, 1);
+    await waitFor(async () => (await b.torSession.cookies.get({})).length === 0, 4000);
+    assert.equal(tabs.torReady, false);
+  });
+
+  await check('proxy: normal tabs go through it, with a password that never reaches the interface', async () => {
+    const secret = 'correct-horse-battery';
+    const proxy = await fakeWebProxy(`me:${secret}`);
+    const result = await shellEval(`window.tern.setProxy({ enabled: true, server: 'http://127.0.0.1:${proxy.port}', username: 'me', password: '${secret}' })`);
+    assert.deepEqual(result, { ok: true });
+    await load('http://proxied-site.invalid/');
+    await waitFor(() => tab.title === 'through web proxy', 8000);
+    assert.ok(proxy.seen.some((u) => u.includes('proxied-site.invalid')));
+    assert.ok(!directHits.includes('/'), 'site not contacted directly');
+    assert.deepEqual(await wc().executeJavaScript(gatherIps), [], 'WebRTC stays quiet');
+    const visible = JSON.stringify(await shellEval('state.settings'));
+    assert.ok(!visible.includes(secret) && !visible.includes('proxyPassword":'), 'not sent to the interface');
+    assert.ok(visible.includes('"proxyHasPassword":true'));
+    b.flushAll();
+    assert.ok(!fs.readFileSync(path.join(profile, 'settings.json'), 'utf8').includes(secret), 'stored encrypted');
+    await new Promise((r) => { proxy.server.closeAllConnections(); proxy.server.close(r); });
+  });
+
+  await check('proxy: if it goes down, pages fail instead of connecting directly', async () => {
+    tabs.navigate(tab.id, `${base}/proxy-is-down`);
+    await waitFor(() => tab.error, 8000);
+    assert.ok(!directHits.includes('/proxy-is-down'));
+    const bad = await shellEval(`window.tern.setProxy({ enabled: true, server: 'not a server' })`);
+    assert.equal(bad.ok, false);
+    assert.equal(b.getSettings().proxyEnabled, true, 'a bad entry leaves protection on');
+    const socksAuth = await shellEval(`window.tern.setProxy({ enabled: true, server: 'socks5://127.0.0.1:1080', username: 'x' })`);
+    assert.equal(socksAuth.ok, false);
+  });
+
+  await check('proxy: turning it off goes back to normal and clears the password', async () => {
+    assert.deepEqual(await shellEval(`window.tern.setProxy({ enabled: false, server: '', username: '' })`), { ok: true });
+    await load(`${base}/ads?proxy-off=1`);
+    assert.ok(directHits.includes('/ads?proxy-off=1'));
+    assert.equal(b.getSettings().proxyPassword, '');
+  });
+  socks.server.close();
 
   await check('filter page scripts run once per page, however many frames ask, and again after a reload', async () => {
     const { engine } = b.adblock;
@@ -732,6 +911,22 @@ async function main() {
       await waitFor(() => page.executeJavaScript("(document.querySelector('#movie_player video')?.currentTime ?? 0) > 2"), 30000);
       assert.equal(await page.executeJavaScript("Boolean(document.querySelector('#movie_player.ad-showing'))"), false);
       tabs.close(yt.id);
+    });
+
+    await check('live: real Tor connects, and check.torproject.org confirms the IP is hidden', async () => {
+      const direct = (await (await b.tabSession.fetch('https://api.ipify.org?format=json')).json()).ip;
+      b.openTorTab();
+      const real = tabs.active;
+      await waitFor(() => tabs.torReady, 120000);
+      tabs.navigate(real.id, 'https://check.torproject.org/api/ip');
+      await waitFor(() => real.view && !real.loading && real.url.includes('check.torproject'), 60000);
+      await sleep(500);
+      const body = JSON.parse(await real.view.webContents.executeJavaScript('document.body.innerText'));
+      assert.equal(body.IsTor, true);
+      assert.notEqual(body.IP, direct);
+      tabs.close(real.id);
+      tabs.activate(tab.id);
+      return 'Tor confirmed, address differs from the real one';
     });
 
     await check('live: built-in AI APIs absent on a secure https page', async () => {

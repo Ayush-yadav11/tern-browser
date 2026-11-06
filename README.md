@@ -9,13 +9,31 @@ Download `Tern-Setup-x.y.z.exe` from the [latest release](https://github.com/Ayu
 and run it. It installs for your Windows account only, without needing admin rights. Because the
 installer isn't code-signed yet, Windows SmartScreen may warn you: choose **More info**, then **Run anyway**.
 
+## Hiding your IP
+
+An IP address can't be faked, because a website has to send its reply somewhere. Tern can route traffic
+through another computer instead, so sites see that computer's address.
+
+- **Tor tab** (Ctrl+Shift+N, or the onion button by the tabs): free, and needs no account. Traffic goes through
+  the Tor network. It's slow, some sites block it, and Tern keeps no history for it. Cookies and cache are
+  wiped when you close your last Tor tab.
+- **Proxy** (Customize > Privacy): sends all normal tabs through a `socks5://` or `http://` server you provide.
+  A VPN app installed on Windows also works, with no Tern settings needed.
+
+Both fail closed: if Tor or the proxy can't be reached, pages fail instead of connecting without it. WebRTC, which
+can reveal your real IP, is limited to proxied traffic. "Check what websites see" in Customize > Privacy shows the
+result, and contacts api.ipify.org only when pressed.
+
+This hides your IP, not who you are. Signing in or typing your details tells a site who you are, and sites can
+still recognize a browser by its setup. Tern's own update checks go directly to GitHub, not through Tor or the proxy.
+
 ## Updates
 
 The installed app checks for new versions when it starts and every 6 hours. It downloads them in the
 background and installs them when you press **Restart to update** or close Tern. A download whose
 checksum doesn't match the published one is refused. You can turn this off in Customize.
 
-A GitHub workflow ([release.yml](.github/workflows/release.yml)) runs every Monday. If Electron or the
+A GitHub workflow ([release.yml](.github/workflows/release.yml)) runs every Monday. If Electron, Tor or the
 ad-block engine has a new version, it updates to it, runs all the tests, and publishes a release only
 if they pass. To release by hand, raise the version in `package.json`, push, and run the workflow from
 the Actions tab. GitHub emails the repo owner if a run fails, and that's worth acting on, because
@@ -33,6 +51,10 @@ Ghostery's CDN in the background and uses them from the next launch.
 
 ```bash
 npm install
+```
+
+```bash
+npm run fetch-tor
 ```
 
 ```bash
@@ -58,6 +80,8 @@ npm start
 | `src/main/flags.js` | Chromium switches that turn off AI features and background services |
 | `src/main/library.js` | Bookmarks, history and address bar matching |
 | `src/main/downloads.js` | Saving files, pause, resume, cancel, and the warning before opening programs |
+| `src/main/tor.js` | Runs Tor while Tor tabs are open |
+| `scripts/fetch-tor.js` | Downloads Tor and checks its signature and checksum |
 | `src/main/updater.js` | Checks for, downloads and installs new versions |
 | `src/main/settings.js` | Saved settings, with every value checked on load |
 | `src/main/url.js` | Works out whether address bar text is an address or a search |
@@ -74,6 +98,7 @@ to `THEMES` in both `src/shell/shell.js` and `src/main/settings.js`.
 | Keys | Action |
 | --- | --- |
 | Ctrl+T / Ctrl+W | New tab / close tab |
+| Ctrl+Shift+N | New Tor tab |
 | Ctrl+Shift+T | Reopen closed tab |
 | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous tab |
 | Ctrl+1 to Ctrl+9 | Jump to a tab |
@@ -101,5 +126,6 @@ to `THEMES` in both `src/shell/shell.js` and `src/main/settings.js`.
 
 ## Credits
 
+IP hiding uses [Tor](https://www.torproject.org/). Licenses are in `resources/tor/docs` of the installed app.
 Ad blocking uses [@ghostery/adblocker](https://github.com/ghostery/adblocker) (MPL-2.0).
 Runs on [Electron](https://www.electronjs.org/) and Chromium.

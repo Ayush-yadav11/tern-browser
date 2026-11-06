@@ -22,6 +22,8 @@ function folderSize(dir) {
 // `name`, `version` and `feedUrl` exist so test/update.js can build a separate copy that
 // can't touch the real Tern, its profile or its update feed.
 async function packageApp({ name = 'Tern', version, feedUrl, out = path.join(root, 'out') } = {}) {
+  const tor = path.join(root, 'vendor', 'tor');
+  if (!fs.existsSync(path.join(tor, 'tor', 'tor.exe'))) throw new Error('Tor is missing. Run: npm run fetch-tor');
   const [appDir] = await packager({
     dir: root,
     out,
@@ -33,10 +35,11 @@ async function packageApp({ name = 'Tern', version, feedUrl, out = path.join(roo
     overwrite: true,
     asar: true,
     prune: true,
+    extraResource: [tor],
     icon: path.join(root, 'assets', 'icon.ico'),
     appBundleId: 'app.tern.browser',
     win32metadata: { CompanyName: 'Tern', FileDescription: 'Tern Browser', ProductName: name },
-    ignore: [/^\/test($|\/)/, /^\/out($|\/)/, /^\/scripts($|\/)/, /^\/docs($|\/)/, /^\/\.github($|\/)/, /\.md$/],
+    ignore: [/^\/test($|\/)/, /^\/out($|\/)/, /^\/scripts($|\/)/, /^\/docs($|\/)/, /^\/\.github($|\/)/, /^\/vendor($|\/)/, /\.md$/],
     afterCopy: [async ({ buildPath }) => {
       const file = path.join(buildPath, 'package.json');
       const pkg = JSON.parse(fs.readFileSync(file, 'utf8'));

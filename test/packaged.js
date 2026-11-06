@@ -2,7 +2,7 @@
 
 // Checks the built out/Tern-win32-x64/Tern.exe, which runs from an asar archive with
 // fuses set, so a pass under `npm test` doesn't prove it. Run with: node test/packaged.js
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
@@ -128,7 +128,11 @@ function cdp(wsUrl) {
     && clicked.suggested.some((v) => v.includes('typed=1')) && saved.theme === 'lagoon' && saved.tabPosition === 'left';
   console.log(`UI clicks reach the browser and settings are saved: ${uiOk}`);
 
-  const pass = uiOk && report.results.doubleclick === 'error' && report.results.analytics === 'error'
+  const torExe = path.join(path.dirname(EXE), 'resources', 'tor', 'tor', 'tor.exe');
+  const torOk = fs.existsSync(torExe) && spawnSync(torExe, ['--version'], { encoding: 'utf8' }).stdout.startsWith('Tor version');
+  console.log(`Tor is included and runs: ${torOk}`);
+
+  const pass = torOk && uiOk && report.results.doubleclick === 'error' && report.results.analytics === 'error'
     && report.results.control === 'loaded' && report.adBoxesHidden && report.controlVisible && report.aiApis.length === 0;
   console.log(pass ? 'PACKAGED BUILD PASS' : 'PACKAGED BUILD FAIL');
 

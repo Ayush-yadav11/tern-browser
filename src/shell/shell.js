@@ -284,10 +284,11 @@ function renderTabs() {
     el.classList.toggle('active', tab.id === state.activeId);
     el.classList.toggle('loading', tab.loading);
     el.classList.toggle('sleeping', tab.sleeping);
+    el.classList.toggle('tor', tab.tor);
     el.setAttribute('aria-selected', String(tab.id === state.activeId));
     const title = tab.title || (tab.url ? openHost(tab.url) : 'New tab');
     el.querySelector('.tab-title').textContent = title;
-    el.title = tab.sleeping ? `${title} (sleeping)` : title;
+    el.title = `${title}${tab.tor ? ' (Tor tab)' : ''}${tab.sleeping ? ' (sleeping)' : ''}`;
     const icon = el.querySelector('.tab-icon');
     const want = tab.loading ? 'loading' : tab.favicon || 'dot';
     if (icon.dataset.src !== want) {
@@ -315,12 +316,26 @@ function renderTabs() {
 /* What shows in the content area when no page view covers it */
 function renderContent() {
   const tab = activeTab();
-  const showNew = Boolean(tab) && !tab.url && !tab.error;
+  const torWaiting = Boolean(tab?.tor) && state.tor.status !== 'ready';
+  const showNew = Boolean(tab) && !tab.url && !tab.error && !torWaiting;
+  document.body.classList.toggle('in-tor', Boolean(tab?.tor));
   $('newtab').hidden = !showNew;
-  $('message').hidden = !tab?.error;
+  $('tor-status').hidden = !torWaiting;
+  $('message').hidden = !tab?.error || torWaiting;
   if (showNew) {
     const n = state.settings.totalBlocked;
-    $('newtab-stat').textContent = n ? `${n.toLocaleString()} ads and trackers blocked so far` : '';
+    $('newtab-title').textContent = tab.tor ? 'Tor tab' : 'Tern';
+    $('newtab-stat').textContent = tab.tor
+      ? 'Websites see a Tor address instead of yours. Nothing here is saved, and it all goes when you close your last Tor tab. Signing in to a site still tells it who you are.'
+      : n ? `${n.toLocaleString()} ads and trackers blocked so far` : '';
+  }
+  if (torWaiting) {
+    const failed = state.tor.status === 'error';
+    $('tor-status-title').textContent = failed ? "Couldn't connect to Tor" : 'Connecting to Tor...';
+    $('tor-status-body').textContent = failed
+      ? `${state.tor.message} Nothing was loaded, so your IP wasn't exposed.`
+      : `${state.tor.percent}%. Nothing loads in this tab until Tor is connected.`;
+    $('tor-retry').hidden = !failed;
   }
   if (tab?.error) {
     $('message-title').textContent = "This page didn't load";
@@ -331,6 +346,8 @@ function renderContent() {
 
 function friendlyError({ code, description }) {
   const known = {
+    '-130': "Couldn't reach your proxy. Tern didn't connect without it, so your IP stayed hidden.",
+    '-120': "Couldn't connect through the proxy or Tor. Tern didn't connect without it, so your IP stayed hidden.",
     '-105': "That address couldn't be found. Check the spelling.",
     '-106': "You don't seem to be connected to the internet.",
     '-109': "That site couldn't be reached.",
@@ -723,6 +740,10 @@ function renderCustomize() {
   $('update-status').textContent = updateStatus(state.update);
   $('update-check').hidden = ['off', 'checking', 'downloading', 'ready'].includes(state.update.status);
   $('auto-update').disabled = state.update.status === 'off';
+  $('proxy-enabled').checked = s.proxyEnabled;
+  if (document.activeElement !== $('proxy-server')) $('proxy-server').value = s.proxyServer;
+  if (document.activeElement !== $('proxy-username')) $('proxy-username').value = s.proxyUsername;
+  $('proxy-password').placeholder = s.proxyHasPassword ? 'Saved. Type to replace it.' : '';
   $('about-version').textContent = state.about.version;
   $('about-chromium').textContent = state.about.chromium;
   if (document.activeElement !== $('custom-css')) $('custom-css').value = s.customCss;
@@ -819,6 +840,26 @@ function wirePanel() {
   $('ask-download').addEventListener('change', (e) => api.setSettings({ askDownloadPath: e.target.checked }));
   $('auto-update').addEventListener('change', (e) => api.setSettings({ autoUpdate: e.target.checked }));
   $('update-check').addEventListener('click', () => api.checkForUpdate());
+  $('tor-open').addEventListener('click', () => api.newTorTab());
+  const saveProxy = async () => {
+    const result = await api.setProxy({
+      enabled: $('proxy-enabled').checked,
+      server: $('proxy-server').value,
+      username: $('proxy-username').value,
+      password: $('proxy-password').value,
+    });
+    $('proxy-password').value = '';
+    $('proxy-status').classList.toggle('bad', !result.ok);
+    $('proxy-status').textContent = result.ok ? (state.settings.proxyEnabled ? 'Saved.' : 'Saved. Proxy is off.') : result.message;
+    if (!result.ok) $('proxy-enabled').checked = state.settings.proxyEnabled;
+  };
+  $('proxy-save').addEventListener('click', saveProxy);
+  $('proxy-enabled').addEventListener('change', saveProxy);
+  $('check-ip').addEventListener('click', async () => {
+    $('check-ip-result').textContent = 'Checking...';
+    const { ip, error } = await api.checkIp();
+    $('check-ip-result').textContent = ip ? `Websites see: ${ip}` : error;
+  });
   $('seg-library').addEventListener('click', (e) => {
     if (!e.target.dataset.value) return;
     libraryTab = e.target.dataset.value;
@@ -913,6 +954,8 @@ wirePanel();
 wireFind();
 watchContent();
 $('new-tab').addEventListener('click', () => api.newTab());
+$('new-tor-tab').addEventListener('click', () => api.newTorTab());
+$('tor-retry').addEventListener('click', () => api.retryTor());
 $('message-retry').addEventListener('click', () => api.reload(state.activeId));
 $('newtab-search').addEventListener('submit', (e) => {
   e.preventDefault();

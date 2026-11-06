@@ -1,7 +1,7 @@
 {
   "name": "tern-browser",
   "productName": "Tern",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "A light, customizable Chromium-based browser with built-in ad blocking and no AI features.",
   "main": "src/main/index.js",
   "private": true,
@@ -13,9 +13,10 @@
     "make-icon": "electron scripts/make-icon.js",
     "package": "node scripts/package.js",
     "test:packaged": "node test/packaged.js",
-    "update": "npm install --save-dev electron@latest && npm install @ghostery/adblocker-electron@latest && npm run update-filters && npm test && npm run package && npm run test:packaged",
+    "update": "npm install --save-dev electron@latest && npm install @ghostery/adblocker-electron@latest && npm run update-filters && npm run fetch-tor -- --update && npm test && npm run package && npm run test:packaged",
     "installer": "node scripts/installer.js",
-    "test:update": "node test/update.js"
+    "test:update": "node test/update.js",
+    "fetch-tor": "node scripts/fetch-tor.js"
   },
   "dependencies": {
     "@ghostery/adblocker-electron": "^2.20.3",

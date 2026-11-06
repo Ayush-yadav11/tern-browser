@@ -5,6 +5,7 @@ const path = require('node:path');
 const { SEARCH_ENGINES } = require('./url');
 
 const THEMES = ['midnight', 'paper', 'lagoon', 'moss', 'ember'];
+const PROXY_SERVER = /^(?:socks5|socks4|http|https):\/\/[^\s/:@]+:\d{1,5}$/i;
 const TOOLBAR_IDS = ['back', 'forward', 'reload', 'home', 'url', 'star', 'shield', 'library', 'downloads', 'customize'];
 const LOCKED_ITEMS = new Set(['url', 'customize']);
 const HIDDEN_BY_DEFAULT = new Set(['home']);
@@ -19,6 +20,10 @@ const DEFAULTS = {
   saveHistory: true,
   askDownloadPath: false,
   autoUpdate: true,
+  proxyEnabled: false,
+  proxyServer: '',
+  proxyUsername: '',
+  proxyPassword: '',
   compact: false,
   radius: 8,
   customCss: '',
@@ -46,6 +51,11 @@ function clean(input, base = DEFAULTS) {
   if ('saveHistory' in input) s.saveHistory = Boolean(input.saveHistory);
   if ('askDownloadPath' in input) s.askDownloadPath = Boolean(input.askDownloadPath);
   if ('autoUpdate' in input) s.autoUpdate = Boolean(input.autoUpdate);
+  // An unusable server stays switched on and just fails to connect, which never exposes the real IP.
+  if ('proxyEnabled' in input) s.proxyEnabled = Boolean(input.proxyEnabled);
+  if ('proxyServer' in input) s.proxyServer = PROXY_SERVER.test(input.proxyServer) ? input.proxyServer : '';
+  if ('proxyUsername' in input && typeof input.proxyUsername === 'string') s.proxyUsername = input.proxyUsername.slice(0, 256);
+  if ('proxyPassword' in input && typeof input.proxyPassword === 'string') s.proxyPassword = input.proxyPassword;
   if ('radius' in input && Number.isFinite(input.radius)) {
     s.radius = Math.min(16, Math.max(0, Math.round(input.radius)));
   }
@@ -108,4 +118,4 @@ class JsonFile {
   }
 }
 
-module.exports = { DEFAULTS, THEMES, clean, JsonFile };
+module.exports = { DEFAULTS, THEMES, PROXY_SERVER, clean, JsonFile };

@@ -12,6 +12,7 @@
     <nav id="tabs" class="drag" aria-label="Tabs">
       <div id="tablist" role="tablist"></div>
       <button id="new-tab" class="icon no-drag" title="New tab (Ctrl+T)" aria-label="New tab"><svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg></button>
+      <button id="new-tor-tab" class="icon no-drag" title="New Tor tab: hides your IP (Ctrl+Shift+N)" aria-label="New Tor tab"><svg viewBox="0 0 16 16"><path d="M8 2v2M8 4c-3 1.5-4.5 3.5-4.5 5.5A4.5 4.5 0 0 0 8 14a4.5 4.5 0 0 0 4.5-4.5C12.5 7.5 11 5.5 8 4zM8 6.5c-1.4.8-2.2 1.8-2.2 3a2.2 2.2 0 0 0 4.4 0c0-1.2-.8-2.2-2.2-3z"/></svg></button>
     </nav>
     <header id="toolbar" class="drag"></header>
     <div id="strips">
@@ -28,12 +29,17 @@
       <div id="content">
         <section id="newtab" hidden>
           <svg class="mark" viewBox="0 0 64 64" aria-hidden="true"><path d="M4 22c14-3 27 0 36 9l20-11-13 20c-5 8-15 12-26 9l-9 7 3-13C10 39 6 31 4 22z"/></svg>
-          <h1>Tern</h1>
+          <h1 id="newtab-title">Tern</h1>
           <form id="newtab-search">
             <input id="newtab-input" placeholder="Search or enter address" aria-label="Search or enter address" spellcheck="false" autocomplete="off">
           </form>
           <div id="newtab-shortcuts" aria-label="Bookmarks"></div>
           <p id="newtab-stat"></p>
+        </section>
+        <section id="tor-status" hidden>
+          <h1 id="tor-status-title"></h1>
+          <p id="tor-status-body"></p>
+          <button id="tor-retry" class="primary" hidden>Try again</button>
         </section>
         <section id="message" hidden>
           <h1 id="message-title"></h1>
@@ -107,6 +113,18 @@
           <label class="row"><span>Bookmarks bar</span><input id="bookmarks-bar-toggle" type="checkbox" class="switch"></label>
           <label class="row"><span>Save browsing history</span><input id="save-history" type="checkbox" class="switch"></label>
           <label class="row"><span>Ask where to save downloads</span><input id="ask-download" type="checkbox" class="switch"></label>
+
+          <h3>Privacy</h3>
+          <p class="muted">A Tor tab hides your IP and keeps nothing after you close it, but it's slow and some sites block it.</p>
+          <button id="tor-open" class="link" type="button">Open a Tor tab</button>
+          <label class="row"><span>Use a proxy for all normal tabs</span><input id="proxy-enabled" type="checkbox" class="switch"></label>
+          <label class="row col"><span>Proxy server</span><input id="proxy-server" class="search tight" placeholder="socks5://host:1080" spellcheck="false" autocomplete="off"></label>
+          <label class="row col"><span>Username (http:// proxies only)</span><input id="proxy-username" class="search tight" spellcheck="false" autocomplete="off"></label>
+          <label class="row col"><span>Password</span><input id="proxy-password" class="search tight" type="password" autocomplete="off"></label>
+          <button id="proxy-save" class="link" type="button">Save proxy</button>
+          <p id="proxy-status" class="muted" aria-live="polite"></p>
+          <button id="check-ip" class="link" type="button" title="Asks api.ipify.org, only when you press this">Check what websites see</button>
+          <p id="check-ip-result" class="muted" aria-live="polite"></p>
 
           <h3>Updates</h3>
           <p id="update-status" class="muted"></p>

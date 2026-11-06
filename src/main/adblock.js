@@ -32,6 +32,7 @@ class AdBlock {
     this.updatedAt = updatedAt;
     this.enabled = false;
     this.scriptsRun = new WeakMap();
+    this.extraSessions = new Set();
     this.wrap(onBlocked);
   }
 
@@ -98,6 +99,24 @@ class AdBlock {
     if (on) this.engine.enableBlockingInSession(this.session);
     else this.engine.disableBlockingInSession(this.session);
     this.enabled = on;
+    this.extraSessions.forEach((ses) => this.applyTo(ses));
+  }
+
+  // Blocks in another session too. The engine can only be enabled for one, because a
+  // second would register its message handlers twice, so this connects the same handlers.
+  attach(ses) {
+    this.extraSessions.add(ses);
+    this.applyTo(ses);
+  }
+
+  applyTo(ses) {
+    const known = new Set(ses.getPreloadScripts().map((script) => script.filePath));
+    for (const script of this.session.getPreloadScripts()) {
+      if (!known.has(script.filePath)) ses.registerPreloadScript({ type: script.type, filePath: script.filePath });
+    }
+    const on = this.enabled;
+    ses.webRequest.onBeforeRequest(on ? { urls: ['<all_urls>'] } : null, on ? (d, cb) => this.engine.onBeforeRequest(d, cb) : null);
+    ses.webRequest.onHeadersReceived(on ? { urls: ['<all_urls>'] } : null, on ? (d, cb) => this.engine.onHeadersReceived(d, cb) : null);
   }
 
   // New filters are saved for the next launch rather than swapped into a running engine.

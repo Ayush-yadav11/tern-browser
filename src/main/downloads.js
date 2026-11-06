@@ -53,6 +53,11 @@ class Downloads extends EventEmitter {
     session.on('will-download', (_event, item, contents) => this.track(item, contents));
   }
 
+  // Files from Tor tabs still save, but aren't written to the list on disk.
+  attachPrivate(ses) {
+    ses.on('will-download', (_event, item, contents) => this.track(item, contents, true));
+  }
+
   load() {
     const saved = this.file.read();
     if (!Array.isArray(saved)) return [];
@@ -98,18 +103,19 @@ class Downloads extends EventEmitter {
   }
 
   save() {
-    this.file.write(this.entries.map(({ filename, path: p, url, total, received, startedAt, state }) => ({
+    this.file.write(this.entries.filter((e) => !e.isPrivate).map(({ filename, path: p, url, total, received, startedAt, state }) => ({
       filename, path: p, url, total, received, startedAt, state,
     })));
   }
 
-  track(item, contents) {
+  track(item, contents, isPrivate = false) {
     const folder = this.getFolder();
     const entry = {
       id: this.nextId++,
       filename: path.basename(item.getFilename()) || 'download',
       path: '',
       url: item.getURL(),
+      isPrivate,
       total: item.getTotalBytes(),
       received: 0,
       speed: 0,
@@ -165,7 +171,7 @@ class Downloads extends EventEmitter {
         entry.path = item.getSavePath();
         entry.filename = path.basename(entry.path);
       }
-      if (state === 'completed') markFromInternet(entry.path, entry.url);
+      if (state === 'completed') markFromInternet(entry.path, isPrivate ? '' : entry.url);
       // Pressing Cancel on the Save As box isn't a download worth listing.
       if (state === 'cancelled' && !entry.path) this.entries = this.entries.filter((e) => e !== entry);
       this.save();
