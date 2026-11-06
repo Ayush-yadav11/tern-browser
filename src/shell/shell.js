@@ -790,6 +790,8 @@ function renderCustomize() {
   $('auto-update').checked = s.autoUpdate;
   $('side-collapse').checked = s.sideCollapse;
   $('https-only').checked = s.httpsOnly;
+  $('strip-tracking').checked = s.stripTracking;
+  $('gpc').checked = s.globalPrivacyControl;
   $('update-status').textContent = updateStatus(state.update);
   $('update-check').hidden = ['off', 'checking', 'downloading', 'ready'].includes(state.update.status);
   $('auto-update').disabled = state.update.status === 'off';
@@ -896,6 +898,8 @@ function wirePanel() {
   $('tor-open').addEventListener('click', () => api.newTorTab());
   $('side-collapse').addEventListener('change', (e) => api.setSettings({ sideCollapse: e.target.checked }));
   $('https-only').addEventListener('change', (e) => api.setSettings({ httpsOnly: e.target.checked }));
+  $('strip-tracking').addEventListener('change', (e) => api.setSettings({ stripTracking: e.target.checked }));
+  $('gpc').addEventListener('change', (e) => api.setSettings({ globalPrivacyControl: e.target.checked }));
   const clearData = $('clear-data');
   let clearDataTimer = null;
   clearData.addEventListener('click', async () => {

@@ -22,6 +22,8 @@ const DEFAULTS = {
   autoUpdate: true,
   sideCollapse: true,
   httpsOnly: true,
+  stripTracking: true,
+  globalPrivacyControl: true,
   proxyEnabled: false,
   proxyServer: '',
   proxyUsername: '',
@@ -55,6 +57,8 @@ function clean(input, base = DEFAULTS) {
   if ('autoUpdate' in input) s.autoUpdate = Boolean(input.autoUpdate);
   if ('sideCollapse' in input) s.sideCollapse = Boolean(input.sideCollapse);
   if ('httpsOnly' in input) s.httpsOnly = Boolean(input.httpsOnly);
+  if ('stripTracking' in input) s.stripTracking = Boolean(input.stripTracking);
+  if ('globalPrivacyControl' in input) s.globalPrivacyControl = Boolean(input.globalPrivacyControl);
   // An unusable server stays switched on and just fails to connect, which never exposes the real IP.
   if ('proxyEnabled' in input) s.proxyEnabled = Boolean(input.proxyEnabled);
   if ('proxyServer' in input) s.proxyServer = PROXY_SERVER.test(input.proxyServer) ? input.proxyServer : '';

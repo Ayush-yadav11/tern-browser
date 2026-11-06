@@ -2,7 +2,7 @@
 
 const { EventEmitter } = require('node:events');
 const { Menu, WebContentsView, clipboard } = require('electron');
-const { hostOf, isLocalHost, isWebUrl } = require('./url');
+const { hostOf, isLocalHost, isWebUrl, stripTracking } = require('./url');
 
 // These mean the site or network is the problem, not that the site lacks HTTPS.
 const HTTPS_WAIT_MS = 10 * 1000;
@@ -14,7 +14,7 @@ const MAX_CLOSED = 20;
 // A tab only owns a renderer while it is awake. New tabs and sleeping tabs have
 // view === null, and the shell draws whatever belongs in the content area instead.
 class Tabs extends EventEmitter {
-  constructor({ window, session, torSession, onShortcut, getSleepMinutes, getWebRtcPolicy, getSearchUrl, getHttpsOnly }) {
+  constructor({ window, session, torSession, onShortcut, getSleepMinutes, getWebRtcPolicy, getSearchUrl, getHttpsOnly, getStripTracking }) {
     super();
     this.window = window;
     this.session = session;
@@ -25,6 +25,7 @@ class Tabs extends EventEmitter {
     this.getWebRtcPolicy = getWebRtcPolicy;
     this.getSearchUrl = getSearchUrl;
     this.getHttpsOnly = getHttpsOnly;
+    this.getStripTracking = getStripTracking;
     // Sites allowed to stay on http until Tern closes. Tor tabs keep their own list.
     this.httpAllowed = new Set();
     this.httpsWaitMs = HTTPS_WAIT_MS;
@@ -118,7 +119,8 @@ class Tabs extends EventEmitter {
   }
 
   // Returns the https address when HTTPS-only mode applies, and remembers the original.
-  secureUrl(tab, url) {
+  secureUrl(tab, address) {
+    const url = this.getStripTracking() ? stripTracking(address) : address;
     tab.upgrade = null;
     if (!this.getHttpsOnly() || !url.startsWith('http:')) return url;
     const parsed = new URL(url);
@@ -336,6 +338,7 @@ class Tabs extends EventEmitter {
     if (!tab || !isWebUrl(url)) return;
     const target = this.secureUrl(tab, url);
     tab.url = target;
+    tab.lastFollowed = target;
     tab.error = null;
     tab.history = null;
     if (!this.canLoad(tab)) {
@@ -461,6 +464,7 @@ class Tabs extends EventEmitter {
       event.preventDefault();
       const target = this.secureUrl(tab, url);
       tab.url = target;
+      tab.lastFollowed = target;
       this.watchUpgrade(tab);
       wc.loadURL(target).catch(() => {});
     };
@@ -475,9 +479,10 @@ class Tabs extends EventEmitter {
         event.preventDefault();
         return;
       }
-      if (!url.startsWith('http:')) return;
+      // A site that insists on its own tracking parameters gets them, rather than a loop.
+      if (this.getStripTracking() && stripTracking(url) === tab.lastFollowed) return;
       // A site sending its secure address back to http would otherwise bounce forever.
-      if (tab.upgrade && tab.upgrade.host === hostOf(url)) {
+      if (url.startsWith('http:') && tab.upgrade && tab.upgrade.host === hostOf(url)) {
         event.preventDefault();
         wc.stop();
         this.showNoHttps(tab, 0, 'This site only offers an unencrypted connection.');
@@ -592,6 +597,9 @@ class Tabs extends EventEmitter {
         { label: 'Open link in new tab', click: () => openInNewTab(p.linkURL) },
         { label: 'Save link as…', click: () => wc.downloadURL(p.linkURL) },
         { label: 'Copy link address', click: () => clipboard.writeText(p.linkURL) },
+        ...(stripTracking(p.linkURL) !== p.linkURL
+          ? [{ label: 'Copy link without tracking', click: () => clipboard.writeText(stripTracking(p.linkURL)) }]
+          : []),
         { type: 'separator' },
       );
     }

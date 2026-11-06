@@ -121,6 +121,8 @@
           <p class="muted">A Tor tab hides your IP and keeps nothing after you close it, but it's slow and some sites block it.</p>
           <button id="tor-open" class="link" type="button">Open a Tor tab</button>
           <label class="row"><span>Always use secure connections (HTTPS)</span><input id="https-only" type="checkbox" class="switch"></label>
+          <label class="row"><span>Remove tracking codes from links</span><input id="strip-tracking" type="checkbox" class="switch"></label>
+          <label class="row" title="Sends Global Privacy Control. Sites decide whether to honor it, and in some places the law requires them to."><span>Ask sites not to sell or share my data</span><input id="gpc" type="checkbox" class="switch"></label>
           <label class="row"><span>Use a proxy for all normal tabs</span><input id="proxy-enabled" type="checkbox" class="switch"></label>
           <label class="row col"><span>Proxy server</span><input id="proxy-server" class="search tight" placeholder="socks5://host:1080" spellcheck="false" autocomplete="off"></label>
           <label class="row col"><span>Username (http:// proxies only)</span><input id="proxy-username" class="search tight" spellcheck="false" autocomplete="off"></label>

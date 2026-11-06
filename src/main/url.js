@@ -46,6 +46,45 @@ const isLocalHost = (host) => (
   || /\.(?:localhost|local|lan|internal|home\.arpa|onion)$/.test(host)
 );
 
+// Link parameters that only exist to track clicks. Kept short on purpose: anything a site
+// might need to work, such as a generic "ref", stays.
+const TRACKING_PARAMS = new Set([
+  'fbclid', 'gclid', 'gclsrc', 'dclid', 'gbraid', 'wbraid', 'msclkid', 'yclid', 'twclid', 'ttclid', 'li_fat_id',
+  'igshid', 'igsh', 'mc_cid', 'mc_eid', 'mkt_tok', '_hsenc', '_hsmi', 'hsctatracking', 'vero_id', 'wickedid',
+  '_openstat', 'oly_anon_id', 'oly_enc_id', 'ml_subscriber', 'ml_subscriber_hash', 'rb_clickid', 's_cid',
+]);
+const TRACKING_PREFIXES = ['utm_'];
+const SITE_TRACKING_PARAMS = [
+  [/(^|\.)(youtube\.com|youtu\.be|spotify\.com)$/, ['si']],
+  [/(^|\.)(twitter\.com|x\.com)$/, ['s', 't']],
+];
+
+// Works on the raw query text, so everything else in the address stays exactly as written.
+function stripTracking(url) {
+  const hashAt = url.indexOf('#');
+  const hash = hashAt < 0 ? '' : url.slice(hashAt);
+  const beforeHash = hashAt < 0 ? url : url.slice(0, hashAt);
+  const queryAt = beforeHash.indexOf('?');
+  if (queryAt < 0) return url;
+  const site = SITE_TRACKING_PARAMS.filter(([host]) => host.test(hostOf(url))).flatMap(([, names]) => names);
+  const parts = beforeHash.slice(queryAt + 1).split('&');
+  const kept = parts.filter((part) => {
+    const name = decodeName(part.split('=')[0]).toLowerCase();
+    return !TRACKING_PARAMS.has(name) && !site.includes(name) && !TRACKING_PREFIXES.some((prefix) => name.startsWith(prefix));
+  });
+  if (kept.length === parts.length) return url;
+  const base = beforeHash.slice(0, queryAt);
+  return `${base}${kept.length ? `?${kept.join('&')}` : ''}${hash}`;
+}
+
+function decodeName(name) {
+  try {
+    return decodeURIComponent(name);
+  } catch {
+    return name;
+  }
+}
+
 const isYouTubeHost = (host) => /(^|\.)youtube\.com$/.test(host);
 
-module.exports = { SEARCH_ENGINES, isWebUrl, resolveInput, hostOf, isLocalHost, isYouTubeHost };
+module.exports = { SEARCH_ENGINES, isWebUrl, resolveInput, hostOf, isLocalHost, isYouTubeHost, stripTracking };

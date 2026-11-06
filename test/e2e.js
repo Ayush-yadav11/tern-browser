@@ -11,7 +11,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { app } = require('electron');
 const { start } = require('../src/main/app');
-const { resolveInput } = require('../src/main/url');
+const { resolveInput, stripTracking } = require('../src/main/url');
 const { clean } = require('../src/main/settings');
 const { isRisky } = require('../src/main/downloads');
 const { Library } = require('../src/main/library');
@@ -42,6 +42,12 @@ function serve() {
     if (req.url.startsWith('/ok.gif')) {
       res.writeHead(200, { 'content-type': 'image/png' });
       res.end(PNG);
+    } else if (req.url.startsWith('/tracked-redirect')) {
+      res.writeHead(302, { location: '/landing?utm_source=mail&keep=1' });
+      res.end();
+    } else if (req.url === '/insists') {
+      res.writeHead(302, { location: '/insists?utm_source=always' });
+      res.end();
     } else if (req.url.startsWith('/send-to-http')) {
       res.writeHead(302, { location: 'http://upgrade-me.example/after-redirect' });
       res.end();
@@ -78,6 +84,7 @@ function serve() {
 // and it records the host names it's asked for.
 function fakeSocks() {
   const seen = [];
+  const requests = [];
   const page = `<!doctype html><title>through the proxy</title><p>ok<script>document.cookie = 'tor=1';</script>
     <a id="popup" href="http://popup.invalid/" target="_blank">popup</a><link rel="icon" href="http://icon.invalid/i.png">`;
   const server = net.createServer((socket) => {
@@ -92,14 +99,16 @@ function fakeSocks() {
         const type = data[3];
         const host = type === 3 ? data.subarray(5, 5 + data[4]).toString() : `ip:${[...data.subarray(4, 8)].join('.')}`;
         seen.push({ type, host });
+        stage = 2;
         socket.write(Buffer.from([5, 0, 0, 1, 0, 0, 0, 0, 0, 0]));
         stage = 2;
       } else {
+        requests.push(data.toString());
         socket.end(`HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(page)}\r\n\r\n${page}`);
       }
     });
   });
-  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, seen, port: server.address().port })));
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, seen, requests, port: server.address().port })));
 }
 
 // A password-protected web proxy, standing in for a paid proxy service.
@@ -521,6 +530,64 @@ async function main() {
     assert.ok(tab.url.startsWith('http://'));
   });
 
+  await check('tracking codes: come off links, and nothing else in the address changes', () => {
+    assert.equal(stripTracking('https://a.example/p?utm_source=x&id=7&fbclid=y#top'), 'https://a.example/p?id=7#top');
+    assert.equal(stripTracking('https://a.example/?UTM_Medium=x'), 'https://a.example/');
+    assert.equal(stripTracking('https://a.example/?q=a+b%20c&gclid=1'), 'https://a.example/?q=a+b%20c', 'other values stay as written');
+    assert.equal(stripTracking('https://a.example/?ref=1&s=2&t=3&si=4'), 'https://a.example/?ref=1&s=2&t=3&si=4', 'unlisted codes stay');
+    assert.equal(stripTracking('https://www.youtube.com/watch?v=abc&si=track'), 'https://www.youtube.com/watch?v=abc');
+    assert.equal(stripTracking('https://x.com/a/status/1?s=20&t=abc'), 'https://x.com/a/status/1');
+    assert.equal(stripTracking('https://a.example/plain'), 'https://a.example/plain');
+    assert.equal(stripTracking('https://a.example/#utm_source=x'), 'https://a.example/#utm_source=x', 'fragments are not query strings');
+    assert.equal(stripTracking('https://a.example/?%zz=1&fbclid=2'), 'https://a.example/?%zz=1', 'broken encoding is fine');
+  });
+
+  await check('tracking codes: removed from typed addresses, links and redirects before the site sees them', async () => {
+    directHits.length = 0;
+    await load(`${base}/ads?utm_source=typed&keep=1`);
+    assert.equal(tab.url, `${base}/ads?keep=1`);
+    assert.ok(directHits.includes('/ads?keep=1'));
+    assert.ok(!directHits.some((u) => u.includes('utm_source')), 'the server never saw it');
+    await wc().executeJavaScript("location.href = '/from-link?fbclid=abc&x=1'; 0", true);
+    await waitFor(() => tab.url === `${base}/from-link?x=1` && !tab.loading, 4000);
+    tabs.navigate(tab.id, `${base}/tracked-redirect`);
+    await waitFor(() => tab.url === `${base}/landing?keep=1` && !tab.loading, 4000);
+    assert.ok(!directHits.some((u) => u.includes('utm_source')));
+  });
+
+  await check('tracking codes: a site that insists on them does not cause a loop', async () => {
+    directHits.length = 0;
+    tabs.navigate(tab.id, `${base}/insists`);
+    await waitFor(() => !tab.loading && tab.url.includes('/insists'), 5000);
+    await sleep(500);
+    assert.ok(directHits.filter((u) => u.startsWith('/insists')).length <= 3, `${directHits.length} requests`);
+  });
+
+  await check('tracking codes: can be turned off, and the link menu offers a clean copy', async () => {
+    b.updateSettings({ stripTracking: false });
+    await load(`${base}/ads?utm_source=kept`);
+    assert.equal(tab.url, `${base}/ads?utm_source=kept`);
+    b.updateSettings({ stripTracking: true });
+    const items = tabs.contextItems(tab, wc(), { linkURL: 'https://a.example/?utm_source=x', mediaType: 'none', srcURL: '', selectionText: '', isEditable: false, x: 1, y: 1 });
+    assert.ok(items.some((i) => i.label === 'Copy link without tracking'));
+  });
+
+  await check('Global Privacy Control: sent as a header and visible to page scripts, until turned off', async () => {
+    const seenHeaders = [];
+    const record = (req) => seenHeaders.push(req.headers['sec-gpc']);
+    server.on('request', record);
+    await load(`${base}/ads?gpc=1`);
+    assert.ok(seenHeaders.includes('1'), 'header sent');
+    assert.equal(await wc().executeJavaScript('navigator.globalPrivacyControl'), true);
+    seenHeaders.length = 0;
+    b.updateSettings({ globalPrivacyControl: false });
+    await load(`${base}/ads?gpc=2`);
+    assert.ok(!seenHeaders.includes('1'), 'header gone');
+    assert.notEqual(await wc().executeJavaScript('navigator.globalPrivacyControl'), true);
+    b.updateSettings({ globalPrivacyControl: true });
+    server.off('request', record);
+  });
+
   await check('tabs: pin keeps a tab first, and duplicate, close others and close right work', async () => {
     const a = tabs.create(`${base}/a`, { activate: false });
     const c = tabs.create(`${base}/c`, { activate: false });
@@ -717,6 +784,8 @@ async function main() {
     tabs.navigate(torTab.id, 'http://leak-check.invalid/page');
     await waitFor(() => torTab.view && !torTab.loading && torTab.title === 'through the proxy', 8000);
     assert.ok(socks.seen.some((s) => s.type === 3 && s.host === 'leak-check.invalid'));
+    assert.ok(socks.requests.some((r) => /sec-gpc: 1/i.test(r)), 'privacy signal is sent in Tor tabs too');
+    assert.equal(await torWc().executeJavaScript('navigator.globalPrivacyControl'), true);
     assert.equal(torTab.error, null);
     await shot(shell, '16-tor-tab');
   });

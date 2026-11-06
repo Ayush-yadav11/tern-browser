@@ -233,6 +233,7 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     getSleepMinutes: () => settings.sleepMinutes,
     getWebRtcPolicy: () => (settings.proxyEnabled ? 'disable_non_proxied_udp' : 'default_public_interface_only'),
     getHttpsOnly: () => settings.httpsOnly,
+    getStripTracking: () => settings.stripTracking,
     getSearchUrl: (text) => SEARCH_ENGINES[settings.searchEngine].url + encodeURIComponent(text),
   });
 
@@ -251,6 +252,16 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
   });
   adblock.setEnabled(settings.adblock);
   tabSession.registerPreloadScript({ type: 'frame', filePath: path.join(__dirname, '..', 'page', 'youtube-preload.js') });
+  tabSession.registerPreloadScript({ type: 'frame', filePath: path.join(__dirname, '..', 'page', 'privacy-preload.js') });
+  ipcMain.on('tern:gpc-enabled', (event) => {
+    event.returnValue = settings.globalPrivacyControl;
+  });
+  for (const ses of [tabSession, torSession]) {
+    ses.webRequest.onBeforeSendHeaders((details, callback) => {
+      if (settings.globalPrivacyControl) details.requestHeaders['Sec-GPC'] = '1';
+      callback({ requestHeaders: details.requestHeaders });
+    });
+  }
   ipcMain.on('tern:block-youtube-ads', (event, host) => {
     event.returnValue = adblock.enabled && !adblock.isSiteAllowed(String(host));
   });
@@ -725,6 +736,7 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     for (const channel of Object.keys(handlers)) ipcMain.removeHandler(channel);
     ipcMain.removeHandler('tern:suggest-pick');
     ipcMain.removeAllListeners('tern:block-youtube-ads');
+    ipcMain.removeAllListeners('tern:gpc-enabled');
     app.removeListener('login', onLogin);
   });
 

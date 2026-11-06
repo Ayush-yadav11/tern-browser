@@ -15,6 +15,9 @@ HTTPS-only mode is on by default. Tern moves web addresses to https, and if a si
 before connecting without encryption, remembering your answer until Tern closes. Local addresses are left alone.
 Turn it off in Customize > Privacy.
 
+Tern also removes known tracking codes from links, such as `utm_source` and `fbclid`, and sends Global Privacy
+Control, which asks sites not to sell or share your data. Sites decide whether to honor that signal.
+
 ## Hiding your IP
 
 An IP address can't be faked, because a website has to send its reply somewhere. Tern can route traffic
@@ -82,6 +85,7 @@ npm start
 | `src/main/app.js` | Starts the browser: window, keyboard shortcuts, permissions, messages from the UI |
 | `src/main/tabs.js` | Tabs, including putting unused ones to sleep to free memory |
 | `src/main/adblock.js` | Ad and tracker blocking, per-site switch, filter refresh |
+| `src/page/privacy-preload.js` | Shows the Global Privacy Control signal to page scripts |
 | `src/page/youtube-preload.js` | Removes YouTube's ad data before the page reads it |
 | `src/main/flags.js` | Chromium switches that turn off AI features and background services |
 | `src/main/library.js` | Bookmarks, history and address bar matching |
