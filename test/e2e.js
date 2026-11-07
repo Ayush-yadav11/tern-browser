@@ -15,6 +15,7 @@ const { SEARCH_SHORTCUTS, resolveInput, stripTracking } = require('../src/main/u
 const { clean } = require('../src/main/settings');
 const { isRisky } = require('../src/main/downloads');
 const { Library } = require('../src/main/library');
+const { findBrowsers, parseBookmarksHtml, parseChromiumBookmarks, toBookmarksHtml } = require('../src/main/bookmarks-io');
 
 const OUT = path.join(__dirname, 'output');
 // Filters skip raw IP addresses, so the local test server needs a normal-looking name.
@@ -1248,6 +1249,125 @@ async function main() {
     assert.deepEqual(reopened.bookmarks.map((x) => x.url), b.library.bookmarks.map((x) => x.url));
     assert.equal(reopened.bookmarks[1].title, 'Renamed <b>bookmark</b>');
     await shellEval('togglePanel(openPanel)');
+  });
+
+  await check('bookmark import: reads the file every browser exports, with folders', () => {
+    const entries = parseBookmarksHtml(`<!DOCTYPE NETSCAPE-Bookmark-file-1>
+      <TITLE>Bookmarks</TITLE><H1>Bookmarks</H1>
+      <DL><p>
+        <DT><H3 PERSONAL_TOOLBAR_FOLDER="true">Bookmarks bar</H3>
+        <DL><p>
+          <DT><A HREF="https://top.example/" ICON="data:image/png;base64,AAA">Top &amp; Co</A>
+          <DT><H3>Work</H3>
+          <DL><p>
+            <DT><A HREF="https://work.example/">Work site</A>
+            <DT><H3>Docs</H3>
+            <DL><p><DT><A HREF="https://docs.example/?a=1&amp;b=2">Docs &lt;b&gt;site&lt;/b&gt;</A></DL><p>
+          </DL><p>
+          <DT><A HREF="https://after.example/">After</A>
+        </DL><p>
+        <DT><A HREF="javascript:alert(1)">Bad</A>
+      </DL><p>`);
+    assert.deepEqual(entries.map((e) => [e.url, e.folder]), [
+      ['https://top.example/', ''],
+      ['https://work.example/', 'Work'],
+      ['https://docs.example/?a=1&b=2', 'Work / Docs'],
+      ['https://after.example/', ''],
+      ['javascript:alert(1)', ''],
+    ]);
+    assert.equal(entries[0].title, 'Top & Co');
+    assert.equal(entries[0].icon, 'data:image/png;base64,AAA');
+    assert.equal(entries[2].title, 'Docs <b>site</b>', 'decoded to plain text');
+  });
+
+  await check('bookmark import: reads the file Chrome, Edge, Brave and Vivaldi keep', () => {
+    const entries = parseChromiumBookmarks(JSON.stringify({ roots: {
+      bookmark_bar: { type: 'folder', name: 'Bookmarks bar', children: [
+        { type: 'url', name: 'One', url: 'https://one.example/' },
+        { type: 'folder', name: 'News', children: [{ type: 'url', name: 'Two', url: 'https://two.example/' }] },
+      ] },
+      other: { type: 'folder', name: 'Other bookmarks', children: [{ type: 'url', name: 'Three', url: 'https://three.example/' }] },
+    } }));
+    assert.deepEqual(entries.map((e) => [e.url, e.folder]), [['https://one.example/', ''], ['https://two.example/', 'News'], ['https://three.example/', '']]);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tern-browsers-'));
+    assert.deepEqual(findBrowsers(dir), [], 'nothing installed');
+    const profileDir = path.join(dir, 'Microsoft', 'Edge', 'User Data', 'Profile 2');
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(path.join(profileDir, 'Bookmarks'), '{}');
+    fs.writeFileSync(path.join(profileDir, 'Login Data'), 'secret');
+    const found = findBrowsers(dir);
+    assert.equal(found[0].name, 'Edge');
+    assert.deepEqual(found[0].files, [path.join(profileDir, 'Bookmarks')], 'only ever the bookmarks file');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('bookmark import and export: duplicates and unsafe addresses are skipped, and exporting round-trips', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tern-lib-'));
+    const lib = new Library(dir);
+    lib.toggleBookmark({ url: 'https://have.example/', title: 'Have' });
+    const result = lib.importBookmarks([
+      { url: 'https://have.example/', title: 'Dup' },
+      { url: 'https://new.example/', title: 'New "one" <x>', folder: 'F & G', icon: 'https://bad.example/x.png' },
+      { url: 'https://new.example/', title: 'Dup in file' },
+      { url: 'file:///C:/x', title: 'Bad' },
+      { url: 'javascript:alert(1)', title: 'Bad' },
+    ]);
+    assert.deepEqual(result, { added: 1, skipped: 4 });
+    const fresh = lib.bookmarks.at(-1);
+    assert.equal(fresh.icon, '', 'remote icons are not kept');
+    const again = parseBookmarksHtml(toBookmarksHtml(lib.bookmarks));
+    assert.deepEqual(again.map((e) => [e.url, e.title, e.folder]), [['https://have.example/', 'Have', ''], ['https://new.example/', 'New "one" <x>', 'F & G']]);
+    lib.flush();
+    assert.equal(new Library(dir).bookmarks.at(-1).folder, 'F & G', 'folders survive a restart');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('bookmark folders: panel groups them, and moving, renaming and removing work', async () => {
+    for (const b2 of [...b.library.bookmarks]) b.library.removeBookmark(b2.id);
+    b.library.importBookmarks([
+      { url: `${base}/f1`, title: 'In folder one', folder: 'Reading' },
+      { url: `${base}/f2`, title: 'In folder two', folder: 'Reading' },
+      { url: `${base}/loose`, title: 'Loose one', folder: '' },
+    ]);
+    await shellEval("showPanel('library', 'bookmarks')");
+    await waitFor(() => inShell(() => document.querySelectorAll('#bookmark-list .folder .entry').length === 2), 3000);
+    assert.equal(await inShell(() => document.querySelector('.folder .count').textContent), '2');
+    await shot(shell, '32-bookmark-folders');
+    await waitFor(() => inShell(() => document.querySelector('#bookmarks-bar .folder-chip')?.dataset.folder === 'Reading'), 2000);
+    assert.equal(await inShell(() => document.querySelectorAll('#bookmarks-bar .bookmark-chip:not(.folder-chip)').length), 1, 'folder contents stay out of the bar');
+
+    const loose = b.library.bookmarks.find((x) => x.title === 'Loose one');
+    await shellEval(`[...document.querySelectorAll('#bookmark-list > .entry .icon')][0].click()`);
+    await waitFor(() => inShell(() => document.querySelector('#bookmark-list > .entry .folder-input')), 2000);
+    await inShell(() => {
+      const input = document.querySelector('#bookmark-list > .entry .folder-input');
+      input.value = 'Reading';
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    });
+    await waitFor(() => loose.folder === 'Reading', 2000);
+
+    b.library.renameFolder('Reading', 'Later');
+    await waitFor(() => inShell(() => document.querySelector('.folder .entry-main').textContent === 'Later'), 2000);
+    assert.ok(b.library.bookmarks.every((x) => x.folder === 'Later'));
+    await inShell(() => document.querySelector('.folder summary [aria-label^="Remove folder"]').click());
+    await waitFor(() => b.library.bookmarks.every((x) => x.folder === ''), 2000);
+    assert.equal(b.library.bookmarks.length, 3, 'its bookmarks stay');
+    for (const b2 of [...b.library.bookmarks]) b.library.removeBookmark(b2.id);
+    await shellEval('togglePanel(openPanel)');
+  });
+
+  await check('bookmark import: a damaged file gives a clear message and changes nothing', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tern-bad-'));
+    const bad = path.join(dir, 'bad.json');
+    fs.writeFileSync(bad, '{ not json');
+    const count = b.library.bookmarks.length;
+    assert.ok(b.importBookmarkFiles([bad]).error.includes("doesn't look like"));
+    assert.equal(b.library.bookmarks.length, count);
+    const good = path.join(dir, 'good.html');
+    fs.writeFileSync(good, '<DL><DT><A HREF="https://file-import.example/">From file</A></DL>');
+    assert.deepEqual(b.importBookmarkFiles([good]), { added: 1, skipped: 0 });
+    b.library.removeBookmark(b.library.bookmarks.at(-1).id);
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   await check('library files: damaged data is ignored and unsafe addresses are dropped', () => {

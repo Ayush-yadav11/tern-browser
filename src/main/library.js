@@ -41,6 +41,7 @@ class Library extends EventEmitter {
         url: b.url,
         title: text(b.title),
         icon: validIcon(b.icon),
+        folder: text(b.folder).trim(),
         addedAt: Number(b.addedAt) || 0,
       });
     }
@@ -85,7 +86,7 @@ class Library extends EventEmitter {
       this.removeBookmark(existing.id);
       return null;
     }
-    const added = { id: this.nextId++, url, title: text(title), icon: validIcon(icon), addedAt: now };
+    const added = { id: this.nextId++, url, title: text(title), icon: validIcon(icon), folder: '', addedAt: now };
     this.bookmarks.push(added);
     this.saveBookmarks();
     return added;
@@ -116,6 +117,51 @@ class Library extends EventEmitter {
     const [bookmark] = this.bookmarks.splice(from, 1);
     this.bookmarks.splice(Math.max(0, Math.min(toIndex, this.bookmarks.length)), 0, bookmark);
     this.saveBookmarks();
+  }
+
+  setBookmarkFolder(id, folder) {
+    const bookmark = this.bookmarks.find((b) => b.id === id);
+    if (!bookmark) return;
+    bookmark.folder = text(folder).trim();
+    this.saveBookmarks();
+  }
+
+  renameFolder(from, to) {
+    const name = text(to).trim();
+    if (!from || !name) return;
+    for (const b of this.bookmarks) if (b.folder === from) b.folder = name;
+    this.saveBookmarks();
+  }
+
+  // Removes the folder itself. Its bookmarks stay, outside any folder.
+  removeFolder(name) {
+    for (const b of this.bookmarks) if (b.folder === name) b.folder = '';
+    this.saveBookmarks();
+  }
+
+  // Adds what isn't already here. Addresses Tern wouldn't open are left out.
+  importBookmarks(entries, now = Date.now()) {
+    const known = new Set(this.bookmarks.map((b) => b.url));
+    let added = 0;
+    let skipped = 0;
+    for (const entry of entries) {
+      if (!isWebUrl(entry.url) || known.has(entry.url) || entry.url.length > MAX_URL) {
+        skipped += 1;
+        continue;
+      }
+      known.add(entry.url);
+      this.bookmarks.push({
+        id: this.nextId++,
+        url: entry.url,
+        title: text(entry.title).trim(),
+        icon: validIcon(entry.icon),
+        folder: text(entry.folder).trim(),
+        addedAt: now,
+      });
+      added += 1;
+    }
+    if (added) this.saveBookmarks();
+    return { added, skipped };
   }
 
   recordVisit(url, title, now = Date.now()) {

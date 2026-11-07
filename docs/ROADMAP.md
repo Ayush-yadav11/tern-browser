@@ -15,7 +15,7 @@ reuse their code, names or artwork. Tern stays light, and has no AI features.
 4. [x] Search shortcuts such as `!w` and `!yt` in the address bar (Helium, DuckDuckGo)
 5. [x] Remember zoom per site, and per-site settings in one place (most browsers)
 6. [x] Reader view (Min, Firefox)
-7. [ ] Bookmark folders, and import from other browsers (most browsers)
+7. [x] Bookmark folders, and import from other browsers (most browsers)
 8. [ ] Tab groups or workspaces (Min's tasks, Zen)
 9. [ ] Split view: two pages side by side (Zen, Vivaldi)
 10. [ ] Full-text search of pages you've visited, stored only on this PC (Min)

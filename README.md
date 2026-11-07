@@ -9,6 +9,12 @@ Download `Tern-Setup-x.y.z.exe` from the [latest release](https://github.com/Ayu
 and run it. It installs for your Windows account only, without needing admin rights. Because the
 installer isn't code-signed yet, Windows SmartScreen may warn you: choose **More info**, then **Run anyway**.
 
+## Bookmarks
+
+Bookmarks can sit in folders, and the bookmarks bar shows each folder as a menu. Under Bookmarks in the library panel,
+you can import from Chrome, Edge, Brave or Vivaldi if they're on this PC, or from the file any browser exports, and export
+your own. Importing reads only the bookmarks file of the browser you pick, and only when you press the button.
+
 ## Reader view
 
 Press the lines icon in the address bar, or Ctrl+Alt+R, to read an article without the clutter, with your own text
@@ -105,6 +111,7 @@ npm start
 | `src/page/privacy-preload.js` | Shows the Global Privacy Control signal to page scripts |
 | `src/page/youtube-preload.js` | Removes YouTube's ad data before the page reads it |
 | `src/main/flags.js` | Chromium switches that turn off AI features and background services |
+| `src/main/bookmarks-io.js` | Reads and writes bookmark files from other browsers |
 | `src/main/library.js` | Bookmarks, history and address bar matching |
 | `src/main/downloads.js` | Saving files, pause, resume, cancel, and the warning before opening programs |
 | `src/main/tor.js` | Runs Tor while Tor tabs are open |
@@ -147,7 +154,6 @@ to `THEMES` in both `src/shell/shell.js` and `src/main/settings.js`.
 
 - No sync or password manager yet, and only one window at a time.
 - Tern can't be set as the default browser yet, and there's no spell check.
-- Bookmarks have no folders yet, and can't be imported from another browser.
 - History keeps the last 90 days, up to 5,000 pages. There's no private window yet.
 - Downloads can't be picked up again after Tern is closed.
 - Netflix-style protected video will not play, because Electron ships without Widevine.

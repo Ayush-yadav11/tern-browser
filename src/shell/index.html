@@ -98,6 +98,14 @@
           </div>
           <input id="library-search" class="search" type="search" placeholder="Search" aria-label="Search bookmarks and history" spellcheck="false" autocomplete="off">
           <ul id="bookmark-list" class="rows"></ul>
+          <datalist id="folder-names"></datalist>
+          <div id="bookmark-tools">
+            <h3>Import and export</h3>
+            <div id="import-browsers"></div>
+            <button id="import-file" class="link" type="button">Import from a bookmarks file</button>
+            <button id="export-bookmarks" class="link" type="button">Export to a bookmarks file</button>
+            <p id="bookmark-tools-status" class="muted" aria-live="polite"></p>
+          </div>
           <div id="history-area" hidden>
             <div id="history-list"></div>
             <button id="history-clear" class="link" type="button">Clear all history</button>

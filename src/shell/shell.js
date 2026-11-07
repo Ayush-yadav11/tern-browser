@@ -19,6 +19,8 @@ const ICON = {
   downloads: '<path d="M8 2.5v7.5M4.5 7L8 10.5 11.5 7M3 13.5h10"/>',
   edit: '<path d="M3 13l.7-2.8L10.5 3.4l2.1 2.1-6.8 6.8z"/>',
   reader: '<path d="M3 3h10M3 6.5h10M3 10h10M3 13.5h6"/>',
+  folder: '<path d="M2.5 4.5a1 1 0 0 1 1-1h3l1.5 1.5h4.5a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1z"/>',
+  chevron: '<path d="M6 3.5l4.5 4.5L6 12.5"/>',
   menu: '<circle cx="8" cy="3.5" r=".6"/><circle cx="8" cy="8" r=".6"/><circle cx="8" cy="12.5" r=".6"/>',
   speaker: '<path d="M3 6.5v3h2.2L8.5 12V4L5.2 6.5zM10.5 6a3 3 0 0 1 0 4M12 4.5a5 5 0 0 1 0 7"/>',
   muted: '<path d="M3 6.5v3h2.2L8.5 12V4L5.2 6.5zM10.5 6.5l3 3M13.5 6.5l-3 3"/>',
@@ -44,6 +46,9 @@ let bookmarkedUrls = new Set();
 let downloads = [];
 let libraryTab = 'bookmarks';
 let editingBookmark = null;
+let movingBookmark = null;
+let editingFolder = null;
+const closedFolders = new Set();
 let freshDownload = false;
 const tabEls = new Map();
 const customStyle = document.createElement('style');
@@ -596,14 +601,33 @@ function bookmarkChip(bookmark) {
   return chip;
 }
 
+const folderNames = () => [...new Set(bookmarks.map((b) => b.folder).filter(Boolean))];
+
+function folderChip(name) {
+  const chip = make('button', 'bookmark-chip folder-chip');
+  chip.title = name;
+  chip.dataset.folder = name;
+  const icon = make('span', 'bm-icon');
+  icon.innerHTML = svg('folder');
+  chip.append(icon, make('span', '', name));
+  chip.addEventListener('click', () => {
+    const r = chip.getBoundingClientRect();
+    api.folderMenu(name, r.left, r.bottom);
+  });
+  return chip;
+}
+
 function renderBookmarksBar() {
   const bar = $('bookmarks-bar');
   bar.hidden = !state?.settings.bookmarksBar || !bookmarks.length;
   bar.textContent = '';
-  if (!bar.hidden) bar.append(...bookmarks.map(bookmarkChip));
+  if (!bar.hidden) {
+    bar.append(...bookmarks.filter((b) => !b.folder).map(bookmarkChip));
+    bar.append(...folderNames().map(folderChip));
+  }
   const shortcuts = $('newtab-shortcuts');
   shortcuts.textContent = '';
-  shortcuts.append(...bookmarks.slice(0, 8).map(bookmarkChip));
+  shortcuts.append(...bookmarks.filter((b) => !b.folder).slice(0, 8).map(bookmarkChip));
   watchContent.send?.();
 }
 
@@ -611,80 +635,213 @@ function renderLibrary() {
   setSeg('seg-library', libraryTab);
   const isHistory = libraryTab === 'history';
   $('bookmark-list').hidden = isHistory;
+  $('bookmark-tools').hidden = isHistory;
+  if (!isHistory) renderImportSources();
   $('history-area').hidden = !isHistory;
   if (!isHistory) renderBookmarkList();
   else if (renderLibrary.historyDirty) refreshHistory();
 }
 renderLibrary.historyDirty = true;
 
+function bookmarkRow(bookmark, canDrag) {
+  const row = make('li', 'entry');
+  row.dataset.id = bookmark.id;
+  row.append(bookmarkIcon(bookmark));
+  const main = make('div', 'entry-main');
+  if (editingBookmark === bookmark.id) {
+    const input = make('input', 'rename');
+    input.value = bookmark.title;
+    input.setAttribute('aria-label', 'Bookmark name');
+    const finish = (save) => {
+      editingBookmark = null;
+      if (save) api.renameBookmark(bookmark.id, input.value);
+      else renderBookmarkList();
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') finish(true);
+      if (e.key === 'Escape') finish(false);
+    });
+    input.addEventListener('blur', () => {
+      if (editingBookmark === bookmark.id) finish(true);
+    });
+    main.append(input);
+    setTimeout(() => {
+      input.focus();
+      input.select();
+    });
+  } else {
+    main.append(make('span', 'entry-title', bookmark.title || openHost(bookmark.url)), make('span', 'entry-sub', bookmark.url));
+    if (movingBookmark !== bookmark.id) openFromList(row, bookmark.url);
+  }
+  if (movingBookmark === bookmark.id) {
+    const input = make('input', 'folder-input');
+    input.value = bookmark.folder;
+    input.placeholder = 'Folder name, or empty for none';
+    input.setAttribute('list', 'folder-names');
+    input.setAttribute('aria-label', 'Move to folder');
+    const finish = (save) => {
+      movingBookmark = null;
+      if (save) api.setBookmarkFolder(bookmark.id, input.value);
+      else renderBookmarkList();
+    };
+    input.addEventListener('click', (e) => e.stopPropagation());
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') finish(true);
+      if (e.key === 'Escape') finish(false);
+    });
+    input.addEventListener('blur', () => {
+      if (movingBookmark === bookmark.id) finish(true);
+    });
+    main.append(input);
+    setTimeout(() => input.focus());
+  }
+  row.append(
+    main,
+    iconButton('folder', 'Move to a folder', () => {
+      movingBookmark = bookmark.id;
+      renderBookmarkList();
+    }),
+    iconButton('edit', 'Rename bookmark', () => {
+      editingBookmark = bookmark.id;
+      renderBookmarkList();
+    }),
+    iconButton('close', 'Remove bookmark', () => api.removeBookmark(bookmark.id)),
+  );
+  if (canDrag) {
+    row.draggable = true;
+    row.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/tern-bookmark', String(bookmark.id));
+      row.classList.add('dragging');
+    });
+    row.addEventListener('dragend', () => row.classList.remove('dragging'));
+    row.addEventListener('dragover', (e) => e.preventDefault());
+    row.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = Number(e.dataTransfer.getData('text/tern-bookmark'));
+      if (!id || id === bookmark.id) return;
+      await api.setBookmarkFolder(id, bookmark.folder);
+      api.moveBookmark(id, bookmarks.findIndex((b) => b.id === bookmark.id));
+    });
+  }
+  return row;
+}
+
+function folderBlock(name, inside, canDrag, searching) {
+  const block = make('details', 'folder');
+  block.open = searching || !closedFolders.has(name);
+  block.addEventListener('toggle', () => {
+    if (searching) return;
+    if (block.open) closedFolders.delete(name);
+    else closedFolders.add(name);
+  });
+  const summary = make('summary');
+  const chevron = make('span', 'chevron');
+  chevron.innerHTML = svg('chevron');
+  const main = make('span', 'entry-main');
+  if (editingFolder === name) {
+    const input = make('input', 'folder-input');
+    input.value = name;
+    input.setAttribute('aria-label', 'Folder name');
+    const finish = (save) => {
+      editingFolder = null;
+      if (save && input.value.trim() && input.value.trim() !== name) api.renameFolder(name, input.value);
+      else renderBookmarkList();
+    };
+    input.addEventListener('click', (e) => e.preventDefault());
+    input.addEventListener('keydown', (e) => {
+      if (e.key === ' ') e.stopPropagation();
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        finish(true);
+      }
+      if (e.key === 'Escape') finish(false);
+    });
+    input.addEventListener('blur', () => {
+      if (editingFolder === name) finish(true);
+    });
+    main.append(input);
+    setTimeout(() => {
+      input.focus();
+      input.select();
+    });
+  } else {
+    main.textContent = name;
+  }
+  const stop = (fn) => () => fn();
+  const rename = iconButton('edit', 'Rename folder', stop(() => {
+    editingFolder = name;
+    renderBookmarkList();
+  }));
+  const remove = iconButton('close', 'Remove folder, keeping its bookmarks', stop(() => api.removeFolder(name)));
+  for (const button of [rename, remove]) button.addEventListener('click', (e) => e.preventDefault());
+  summary.append(chevron, main, make('span', 'count', String(inside.length)), rename, remove);
+  if (canDrag) {
+    summary.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      block.classList.add('drop-target');
+    });
+    summary.addEventListener('dragleave', () => block.classList.remove('drop-target'));
+    summary.addEventListener('drop', (e) => {
+      e.preventDefault();
+      block.classList.remove('drop-target');
+      const id = Number(e.dataTransfer.getData('text/tern-bookmark'));
+      if (id) api.setBookmarkFolder(id, name);
+    });
+  }
+  const list = make('ul', 'rows');
+  list.append(...inside.map((b) => bookmarkRow(b, canDrag)));
+  block.append(summary, list);
+  return block;
+}
+
 function renderBookmarkList() {
   const list = $('bookmark-list');
   const words = $('library-search').value.toLowerCase().split(/\s+/).filter(Boolean);
   const shown = bookmarks.filter((b) => {
-    const haystack = `${b.title} ${b.url}`.toLowerCase();
+    const haystack = `${b.title} ${b.url} ${b.folder}`.toLowerCase();
     return words.every((w) => haystack.includes(w));
   });
   const empty = $('library-empty');
   empty.hidden = shown.length > 0;
   empty.textContent = words.length ? 'No bookmarks match that.' : 'Press the star in the toolbar, or Ctrl+D, to save a page here.';
-  const key = JSON.stringify([shown, editingBookmark]);
+  const key = JSON.stringify([shown, editingBookmark, movingBookmark, editingFolder]);
   if (list.dataset.key === key) return;
   list.dataset.key = key;
   list.textContent = '';
-  for (const bookmark of shown) {
-    const row = make('li', 'entry');
-    row.append(bookmarkIcon(bookmark));
-    const main = make('div', 'entry-main');
-    if (editingBookmark === bookmark.id) {
-      const input = make('input', 'rename');
-      input.value = bookmark.title;
-      input.setAttribute('aria-label', 'Bookmark name');
-      const finish = (save) => {
-        editingBookmark = null;
-        if (save) api.renameBookmark(bookmark.id, input.value);
-        else renderBookmarkList();
-      };
-      input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') finish(true);
-        if (e.key === 'Escape') finish(false);
-      });
-      input.addEventListener('blur', () => {
-        if (editingBookmark === bookmark.id) finish(true);
-      });
-      main.append(input);
-      setTimeout(() => {
-        input.focus();
-        input.select();
-      });
-    } else {
-      main.append(make('span', 'entry-title', bookmark.title || openHost(bookmark.url)), make('span', 'entry-sub', bookmark.url));
-      openFromList(row, bookmark.url);
-    }
-    row.append(
-      main,
-      iconButton('edit', 'Rename bookmark', () => {
-        editingBookmark = bookmark.id;
-        renderBookmarkList();
-      }),
-      iconButton('close', 'Remove bookmark', () => api.removeBookmark(bookmark.id)),
-    );
-    // Reordering a filtered list would be guesswork, so dragging only works on the full one.
-    if (!words.length) {
-      row.draggable = true;
-      row.addEventListener('dragstart', (e) => {
-        e.dataTransfer.setData('text/tern-bookmark', String(bookmark.id));
-        row.classList.add('dragging');
-      });
-      row.addEventListener('dragend', () => row.classList.remove('dragging'));
-      row.addEventListener('dragover', (e) => e.preventDefault());
-      row.addEventListener('drop', (e) => {
-        e.preventDefault();
-        const id = Number(e.dataTransfer.getData('text/tern-bookmark'));
-        if (id && id !== bookmark.id) api.moveBookmark(id, bookmarks.findIndex((b) => b.id === bookmark.id));
-      });
-    }
-    list.append(row);
+  const options = $('folder-names');
+  options.textContent = '';
+  options.append(...folderNames().map((name) => {
+    const option = make('option');
+    option.value = name;
+    return option;
+  }));
+  // Reordering a filtered list would be guesswork, so dragging only works on the full one.
+  const canDrag = !words.length;
+  const folders = [...new Set(shown.map((b) => b.folder).filter(Boolean))];
+  for (const name of folders) list.append(folderBlock(name, shown.filter((b) => b.folder === name), canDrag, words.length > 0));
+  list.append(...shown.filter((b) => !b.folder).map((b) => bookmarkRow(b, canDrag)));
+}
+
+async function renderImportSources() {
+  const holder = $('import-browsers');
+  if (holder.dataset.loaded) return;
+  holder.dataset.loaded = '1';
+  for (const { id, name } of await api.importSources()) {
+    const button = make('button', 'link', `Import from ${name}`);
+    button.type = 'button';
+    button.dataset.browser = id;
+    button.addEventListener('click', async () => showImportResult(await api.importBrowser(id)));
+    holder.append(button);
   }
+}
+
+function showImportResult(result) {
+  if (result.canceled) return;
+  const status = $('bookmark-tools-status');
+  if (result.error) status.textContent = result.error;
+  else if (result.path) status.textContent = `Saved ${result.count} bookmarks to ${result.path}`;
+  else status.textContent = `Added ${result.added} ${result.added === 1 ? 'bookmark' : 'bookmarks'}${result.skipped ? `, skipped ${result.skipped} already here or unsupported` : ''}.`;
 }
 
 function dayLabel(time) {
@@ -1010,6 +1167,8 @@ function wirePanel() {
   $('auto-update').addEventListener('change', (e) => api.setSettings({ autoUpdate: e.target.checked }));
   $('update-check').addEventListener('click', () => api.checkForUpdate());
   $('tor-open').addEventListener('click', () => api.newTorTab());
+  $('import-file').addEventListener('click', async () => showImportResult(await api.importFile()));
+  $('export-bookmarks').addEventListener('click', async () => showImportResult(await api.exportBookmarks()));
   $('reader-smaller').addEventListener('click', () => api.setSettings({ readerFontSize: state.settings.readerFontSize - 1 }));
   $('reader-larger').addEventListener('click', () => api.setSettings({ readerFontSize: state.settings.readerFontSize + 1 }));
   $('reader-serif').addEventListener('change', (e) => api.setSettings({ readerSerif: e.target.checked }));

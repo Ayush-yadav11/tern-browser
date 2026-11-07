@@ -1,5 +1,6 @@
 'use strict';
 
+const fs = require('node:fs');
 const path = require('node:path');
 const { app, BaseWindow, Menu, WebContentsView, dialog, ipcMain, safeStorage, session, shell: electronShell } = require('electron');
 const { applyFlags } = require('./flags');
@@ -9,6 +10,7 @@ const { Library } = require('./library');
 const { Tabs } = require('./tabs');
 const { Tor, torPath } = require('./tor');
 const { Updater } = require('./updater');
+const { findBrowsers, readBookmarksFile, toBookmarksHtml } = require('./bookmarks-io');
 const { DEFAULTS, PROXY_SERVER, clean, JsonFile } = require('./settings');
 const { SEARCH_ENGINES, SEARCH_SHORTCUTS, hostOf, isWebUrl, parseShortcut, resolveInput } = require('./url');
 
@@ -330,6 +332,14 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
   });
 
   const library = new Library(profile);
+  const importBookmarkFiles = (files) => {
+    try {
+      const entries = files.flatMap((file) => readBookmarksFile(file));
+      return library.importBookmarks(entries);
+    } catch (error) {
+      return { error: error instanceof SyntaxError ? "That file doesn't look like a bookmarks file." : error.message };
+    }
+  };
   const pushBookmarks = () => send('tern:bookmarks', library.bookmarks);
   library.on('bookmarks', pushBookmarks);
   library.on('history', () => send('tern:history-changed'));
@@ -566,6 +576,43 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     },
     'tern:tab-menu': (id) => tabs.tabMenu(id),
     'tern:toggle-muted': (id) => tabs.toggleMuted(id),
+    'tern:bookmark-set-folder': (id, folder) => library.setBookmarkFolder(id, folder),
+    'tern:folder-rename': (from, to) => library.renameFolder(from, to),
+    'tern:folder-remove': (name) => library.removeFolder(name),
+    'tern:folder-menu': (folder, x, y) => {
+      const inside = library.bookmarks.filter((b) => b.folder === folder);
+      const tor = Boolean(tabs.active?.tor);
+      const items = inside.map((b) => ({ label: (b.title || b.url).slice(0, 70), click: () => tabs.navigate(tabs.activeId, b.url) }));
+      items.push({ type: 'separator' }, {
+        label: `Open all ${inside.length} in new tabs`,
+        click: () => inside.forEach((b) => tabs.create(b.url, { activate: false, tor })),
+      });
+      Menu.buildFromTemplate(items).popup({ window: win, x: Math.round(Number(x) || 0), y: Math.round(Number(y) || 0) });
+    },
+    'tern:import-sources': () => findBrowsers().map(({ id, name }) => ({ id, name })),
+    // Only reads the bookmark file of the browser you picked, when you pick it.
+    'tern:import-browser': (id) => {
+      const browser = findBrowsers().find((b) => b.id === id);
+      return browser ? importBookmarkFiles(browser.files) : { error: "Couldn't find that browser's bookmarks." };
+    },
+    'tern:import-file': async () => {
+      const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+        title: 'Import bookmarks',
+        filters: [{ name: 'Bookmarks file', extensions: ['html', 'htm', 'json'] }],
+        properties: ['openFile'],
+      });
+      return canceled ? { canceled: true } : importBookmarkFiles(filePaths);
+    },
+    'tern:export-bookmarks': async () => {
+      const { canceled, filePath } = await dialog.showSaveDialog(win, {
+        title: 'Export bookmarks',
+        defaultPath: path.join(app.getPath('downloads'), 'tern-bookmarks.html'),
+        filters: [{ name: 'Bookmarks file', extensions: ['html'] }],
+      });
+      if (canceled || !filePath) return { canceled: true };
+      fs.writeFileSync(filePath, toBookmarksHtml(library.bookmarks));
+      return { path: filePath, count: library.bookmarks.length };
+    },
     'tern:toggle-reader': (id, theme) => tabs.toggleReader(id, theme),
     'tern:style-reader': (theme) => {
       for (const tab of tabs.tabs) if (tab.readerView) tabs.styleReader(tab, theme).catch(() => {});
@@ -842,6 +889,7 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     downloads,
     updater,
     mainMenuItems,
+    importBookmarkFiles,
     setPermissionChoiceForTest: (origin, name, allowed) => permissionChoices.set(`${origin}|${name}`, allowed),
     tor,
     torSession,
