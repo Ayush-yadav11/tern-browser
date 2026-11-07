@@ -471,6 +471,7 @@ function renderTabs() {
     el.classList.toggle('loading', tab.loading);
     el.classList.toggle('sleeping', tab.sleeping);
     el.classList.toggle('tor', tab.tor);
+    el.classList.toggle('split-partner', Boolean(state.split) && tab.id !== state.activeId && (tab.id === state.split.left || tab.id === state.split.right));
     el.classList.toggle('pinned', tab.pinned);
     const audio = el.querySelector('.tab-audio');
     audio.hidden = !tab.audible && !tab.muted;
@@ -519,7 +520,62 @@ function renderTabs() {
 }
 
 /* What shows in the content area when no page view covers it */
+const SPLIT_GAP = 6;
+
+function renderSplit() {
+  const { split } = state;
+  $('split-bar').hidden = !split;
+  $('split-divider').hidden = !split;
+  const content = $('content');
+  if (!split) {
+    content.style.padding = '';
+    return;
+  }
+  const width = content.getBoundingClientRect().width;
+  const leftWidth = Math.round((width - SPLIT_GAP) * split.ratio);
+  const leftActive = split.left === state.activeId;
+  $('split-divider').style.left = `${leftWidth}px`;
+  $('split-bar').style.left = `${leftActive ? 0 : leftWidth + SPLIT_GAP}px`;
+  $('split-bar').style.width = `${leftActive ? leftWidth : width - SPLIT_GAP - leftWidth}px`;
+  // Keeps the new tab and message cards on the active side.
+  content.style.padding = leftActive ? `0 ${width - leftWidth}px 0 0` : `0 0 0 ${leftWidth + SPLIT_GAP}px`;
+}
+
+function wireSplit() {
+  const divider = $('split-divider');
+  let frame = 0;
+  const move = (e) => {
+    const r = $('content').getBoundingClientRect();
+    const ratio = (e.clientX - r.left) / Math.max(1, r.width - SPLIT_GAP);
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(() => api.setSplitRatio(ratio));
+  };
+  // Pages sit above the interface, so it's lifted over them for the length of the drag.
+  divider.addEventListener('pointerdown', async (e) => {
+    e.preventDefault();
+    divider.setPointerCapture(e.pointerId);
+    divider.classList.add('dragging');
+    await setLift('split', true);
+    divider.addEventListener('pointermove', move);
+  });
+  const stop = () => {
+    divider.removeEventListener('pointermove', move);
+    if (!divider.classList.contains('dragging')) return;
+    divider.classList.remove('dragging');
+    setLift('split', false);
+  };
+  divider.addEventListener('pointerup', stop);
+  divider.addEventListener('pointercancel', stop);
+  divider.addEventListener('dblclick', () => api.setSplitRatio(0.5));
+  divider.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    api.setSplitRatio(state.split.ratio + (e.key === 'ArrowLeft' ? -0.02 : 0.02));
+  });
+}
+
 function renderContent() {
+  renderSplit();
   const tab = activeTab();
   const torWaiting = Boolean(tab?.tor) && state.tor.status !== 'ready';
   const showNew = Boolean(tab) && !tab.url && !tab.error && !torWaiting;
@@ -1426,6 +1482,8 @@ const PALETTE_ACTIONS = [
   ['Duplicate tab', () => api.runAction('duplicate')],
   ['Pin or unpin tab', () => api.runAction('pin')],
   ['New group with this tab', () => api.newGroup(state.activeId)],
+  ['Split view with new tab', () => api.startSplit(state.activeId)],
+  ['Close split view', () => api.closeSplit(state.activeId)],
   ['Mute or unmute tab', () => api.runAction('mute')],
   ['Close other tabs', () => api.runAction('closeOthers')],
   ['Close tab', () => api.close(state.activeId)],
@@ -1651,6 +1709,7 @@ wirePanel();
 wireFind();
 wireSideTabs();
 wirePalette();
+wireSplit();
 watchContent();
 $('new-tab').addEventListener('click', () => api.newTab());
 $('new-tor-tab').addEventListener('click', () => api.newTorTab());

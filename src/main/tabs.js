@@ -13,6 +13,10 @@ const NOT_AN_HTTPS_PROBLEM = new Set([-3, -105, -106, -120, -130, -137]);
 const MAX_CLOSED = 20;
 const GROUP_COLORS = ['blue', 'red', 'yellow', 'green', 'pink', 'purple', 'teal', 'grey'];
 const MAX_GROUP_NAME = 60;
+const SPLIT_GAP = 6;
+const SPLIT_BAR = 2;
+const SPLIT_MIN = 0.2;
+const SPLIT_MAX = 0.8;
 
 // A tab only owns a renderer while it is awake. New tabs and sleeping tabs have
 // view === null, and the shell draws whatever belongs in the content area instead.
@@ -36,6 +40,7 @@ class Tabs extends EventEmitter {
     this.httpsWaitMs = HTTPS_WAIT_MS;
     this.tabs = [];
     this.groups = [];
+    this.splits = [];
     this.nextGroupId = 1;
     this.activeId = null;
     this.nextId = 1;
@@ -62,6 +67,7 @@ class Tabs extends EventEmitter {
     return {
       activeId: this.activeId,
       groups: this.groups,
+      split: this.splitFor(this.active) ?? null,
       tabs: this.tabs.map((t) => ({
         id: t.id,
         url: t.url,
@@ -122,16 +128,106 @@ class Tabs extends EventEmitter {
     if (!tab) return;
     const ownGroup = this.groupOf(tab);
     if (ownGroup) ownGroup.collapsed = false;
-    const previous = this.active;
-    if (previous?.view && previous !== tab) {
-      this.window.contentView.removeChildView(previous.view);
-      if (previous.readerView) this.window.contentView.removeChildView(previous.readerView);
-      previous.lastActive = Date.now();
-    }
+    const before = this.visibleTabs();
     this.activeId = id;
     tab.lastActive = Date.now();
-    if (this.canLoad(tab) && tab.url && !tab.view && !tab.error) this.wake(tab);
-    this.attach(tab);
+    this.showVisible(before);
+    this.changed();
+  }
+
+  splitFor(tab) {
+    return tab ? this.splits.find((s) => s.left === tab.id || s.right === tab.id) ?? null : null;
+  }
+
+  partnerOf(tab) {
+    const split = this.splitFor(tab);
+    return split ? this.byId(split.left === tab.id ? split.right : split.left) : null;
+  }
+
+  // The tabs on screen: the active one, plus its partner in a split.
+  visibleTabs() {
+    const tab = this.active;
+    if (!tab) return [];
+    const partner = this.partnerOf(tab);
+    return partner ? [tab, partner] : [tab];
+  }
+
+  // Takes down what's no longer on screen and brings up what now is.
+  showVisible(before) {
+    const after = this.visibleTabs();
+    for (const old of before) {
+      if (after.includes(old) || !old.view) continue;
+      this.window.contentView.removeChildView(old.view);
+      if (old.readerView) this.window.contentView.removeChildView(old.readerView);
+      old.lastActive = Date.now();
+    }
+    for (const tab of after) {
+      if (this.canLoad(tab) && tab.url && !tab.view && !tab.error) this.wake(tab);
+      this.attach(tab);
+    }
+    this.layoutPages();
+  }
+
+  // Where a tab's page goes inside the content area. A thin bar is left above each side
+  // of a split, because only the interface underneath can show which side is active.
+  boundsFor(tab) {
+    const split = this.splitFor(tab);
+    if (!split || !this.visibleTabs().includes(tab)) return this.bounds;
+    const { x, y, width, height } = this.bounds;
+    const leftWidth = Math.round((width - SPLIT_GAP) * split.ratio);
+    const top = { y: y + SPLIT_BAR, height: Math.max(0, height - SPLIT_BAR) };
+    return tab.id === split.left
+      ? { x, ...top, width: leftWidth }
+      : { x: x + leftWidth + SPLIT_GAP, ...top, width: Math.max(0, width - SPLIT_GAP - leftWidth) };
+  }
+
+  layoutPages() {
+    for (const tab of this.visibleTabs()) {
+      if (!(this.fullscreen && tab.id === this.activeId)) tab.view?.setBounds(this.boundsFor(tab));
+      tab.readerView?.setBounds(this.boundsFor(tab));
+    }
+  }
+
+  // Puts the pages back on top after the interface has been lifted over them.
+  raisePages() {
+    for (const tab of this.visibleTabs()) {
+      if (!tab.view || !this.window.contentView.children.includes(tab.view)) continue;
+      this.window.contentView.addChildView(tab.view);
+      if (tab.readerView) this.window.contentView.addChildView(tab.readerView);
+    }
+  }
+
+  startSplit(id, otherId) {
+    const tab = this.byId(id);
+    if (!tab) return;
+    let other = otherId ? this.byId(otherId) : null;
+    if (otherId && (!other || other === tab)) return;
+    const before = this.visibleTabs();
+    const isNew = !other;
+    if (isNew) other = this.create('', { activate: false, index: this.tabs.indexOf(tab) + 1 });
+    this.splits = this.splits.filter((s) => ![s.left, s.right].some((sideId) => sideId === tab.id || sideId === other.id));
+    this.splits.push({ left: tab.id, right: other.id, ratio: 0.5 });
+    this.activeId = isNew ? other.id : tab.id;
+    this.showVisible(before);
+    this.changed();
+    if (isNew) this.emit('focus-address');
+  }
+
+  closeSplit(id) {
+    const tab = this.byId(id);
+    const split = this.splitFor(tab);
+    if (!split) return;
+    const before = this.visibleTabs();
+    this.splits = this.splits.filter((s) => s !== split);
+    this.showVisible(before);
+    this.changed();
+  }
+
+  setSplitRatio(ratio) {
+    const split = this.splitFor(this.active);
+    if (!split || !Number.isFinite(ratio)) return;
+    split.ratio = Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, ratio));
+    this.layoutPages();
     this.changed();
   }
 
@@ -192,7 +288,7 @@ class Tabs extends EventEmitter {
   }
 
   attach(tab) {
-    if (!tab.view || tab.id !== this.activeId) return;
+    if (!tab.view || !this.visibleTabs().includes(tab)) return;
     if (tab.error) {
       this.window.contentView.removeChildView(tab.view);
       return;
@@ -203,8 +299,8 @@ class Tabs extends EventEmitter {
       if (tab.readerView) this.window.contentView.addChildView(tab.readerView);
       this.emit('attached');
     }
-    tab.view.setBounds(this.fullscreen ? this.fullBounds() : this.bounds);
-    tab.readerView?.setBounds(this.bounds);
+    tab.view.setBounds(this.fullscreen && tab.id === this.activeId ? this.fullBounds() : this.boundsFor(tab));
+    tab.readerView?.setBounds(this.boundsFor(tab));
   }
 
   // A link that turned out to be a file shouldn't leave its tab stuck on the file's address.
@@ -230,14 +326,15 @@ class Tabs extends EventEmitter {
 
   setBounds(bounds) {
     this.bounds = bounds;
-    if (this.active?.view && !this.fullscreen) this.active.view.setBounds(bounds);
-    this.active?.readerView?.setBounds(bounds);
+    this.layoutPages();
   }
 
   close(id) {
     const index = this.tabs.findIndex((t) => t.id === id);
     if (index < 0) return;
     const tab = this.tabs[index];
+    const partner = this.partnerOf(tab);
+    this.splits = this.splits.filter((s) => s !== this.splitFor(tab));
     if (tab.url && !tab.tor) {
       this.closed.push({ url: tab.url, title: tab.title, index });
       if (this.closed.length > MAX_CLOSED) this.closed.shift();
@@ -252,8 +349,9 @@ class Tabs extends EventEmitter {
     }
     if (this.activeId === id) {
       this.activeId = null;
-      this.activate(this.tabs[Math.min(index, this.tabs.length - 1)].id);
+      this.activate((partner ?? this.tabs[Math.min(index, this.tabs.length - 1)]).id);
     } else {
+      this.layoutPages();
       this.changed();
     }
   }
@@ -549,8 +647,8 @@ class Tabs extends EventEmitter {
       Menu.buildFromTemplate(items).popup({ window: this.window });
     });
     tab.readerView = view;
-    view.setBounds(this.bounds);
-    if (tab.id === this.activeId) this.window.contentView.addChildView(view);
+    view.setBounds(this.boundsFor(tab));
+    if (this.visibleTabs().includes(tab)) this.window.contentView.addChildView(view);
     this.emit('attached');
     await wc.loadURL(readerPage(article, { pageUrl: tab.url })).catch(() => {});
     if (tab.readerView === view) {
@@ -606,8 +704,20 @@ class Tabs extends EventEmitter {
       ...(tab.group ? [{ label: 'Remove from group', click: () => this.removeFromGroup(tab.id) }] : []),
       { type: 'separator' },
     ];
+    const others = this.tabs.filter((t) => t !== tab);
+    const splitting = this.splitFor(tab)
+      ? [{ label: 'Close split view', click: () => this.closeSplit(tab.id) }, { type: 'separator' }]
+      : [
+        { label: 'Split view with new tab', click: () => this.startSplit(tab.id) },
+        ...(others.length ? [{
+          label: 'Split view with',
+          submenu: others.slice(0, 30).map((t) => ({ label: (t.title || t.url || 'New tab').slice(0, 60), click: () => this.startSplit(tab.id, t.id) })),
+        }] : []),
+        { type: 'separator' },
+      ];
     return [
       ...grouping,
+      ...splitting,
       { label: 'Reload', enabled: Boolean(tab.url), click: () => this.reload(tab.id) },
       { label: 'Duplicate', enabled: Boolean(tab.url), click: () => this.duplicate(tab.id) },
       { label: tab.pinned ? 'Unpin' : 'Pin', click: () => this.togglePinned(tab.id) },
@@ -711,7 +821,7 @@ class Tabs extends EventEmitter {
   }
 
   sleep(tab) {
-    if (!tab.view || tab.id === this.activeId) return;
+    if (!tab.view || this.visibleTabs().includes(tab)) return;
     const nav = tab.view.webContents.navigationHistory;
     const entries = nav.getAllEntries();
     tab.history = entries.length ? { entries, index: nav.getActiveIndex() } : null;
@@ -722,8 +832,9 @@ class Tabs extends EventEmitter {
   sleepIdle(now = Date.now()) {
     const minutes = this.getSleepMinutes();
     if (!minutes) return;
+    const visible = this.visibleTabs();
     for (const tab of this.tabs) {
-      if (!tab.view || tab.id === this.activeId) continue;
+      if (!tab.view || visible.includes(tab)) continue;
       if (tab.view.webContents.isCurrentlyAudible()) continue;
       if (now - tab.lastActive >= minutes * 60 * 1000) this.sleep(tab);
     }
@@ -805,6 +916,10 @@ class Tabs extends EventEmitter {
       if (event.isMainFrame && !isWebUrl(event.url)) event.preventDefault();
     });
 
+    // Clicking into the other side of a split makes it the active tab.
+    wc.on('focus', () => {
+      if (tab.id !== this.activeId && this.visibleTabs().includes(tab)) this.activate(tab.id);
+    });
     wc.on('did-start-navigation', (details) => {
       if (!details.isMainFrame || details.isSameDocument) return;
       this.closeReader(tab);
@@ -894,7 +1009,8 @@ class Tabs extends EventEmitter {
     if (tab.id !== this.activeId) return;
     this.fullscreen = on;
     this.window.setFullScreen(on);
-    tab.view?.setBounds(on ? this.fullBounds() : this.bounds);
+    if (on && tab.view) this.window.contentView.addChildView(tab.view);
+    tab.view?.setBounds(on ? this.fullBounds() : this.boundsFor(tab));
     this.emit('fullscreen', on);
   }
 

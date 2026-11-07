@@ -874,6 +874,109 @@ async function main() {
     await sleep(100);
   });
 
+  await check('split view: shows two pages side by side, each on its own half', async () => {
+    const before = tab.view.getBounds();
+    const other = tabs.create(`${base}/split-right`, { activate: false });
+    tabs.startSplit(tab.id, other.id);
+    await waitFor(() => other.view && !other.loading, 4000);
+    const left = tab.view.getBounds();
+    const right = other.view.getBounds();
+    assert.ok(win.contentView.children.includes(tab.view) && win.contentView.children.includes(other.view), 'both on screen');
+    assert.equal(left.x, before.x);
+    assert.ok(Math.abs(left.width - right.width) <= 1, `${left.width} and ${right.width}`);
+    assert.equal(right.x, left.x + left.width + 6, 'a gap for the divider');
+    assert.equal(left.y, before.y + 2, 'room for the active-side bar');
+    await waitFor(() => inShell(() => !document.getElementById('split-divider').hidden), 2000);
+    await shot(shell, '36-split');
+
+    other.view.webContents.emit('focus');
+    assert.equal(tabs.activeId, other.id, 'clicking into a side makes it active');
+    assert.equal(win.contentView.children.includes(tab.view), true, 'and the other side stays');
+    await waitFor(() => inShell(() => document.querySelector('.tab.split-partner') !== null), 2000);
+
+    tabs.setSplitRatio(0.7);
+    assert.ok(tab.view.getBounds().width > other.view.getBounds().width * 2);
+    tabs.setSplitRatio(0.99);
+    assert.equal(tabs.splitFor(tab).ratio, 0.8, 'neither side can vanish');
+    tabs.setSplitRatio(0.5);
+
+    const third = tabs.create(`${base}/third`);
+    await waitFor(() => third.view && !third.loading, 4000);
+    assert.ok(!win.contentView.children.includes(tab.view) && !win.contentView.children.includes(other.view), 'both step aside for another tab');
+    assert.deepEqual(third.view.getBounds(), before, 'which gets the full space');
+    other.lastActive = 0;
+    tabs.activate(tab.id);
+    assert.ok(win.contentView.children.includes(other.view), 'going back brings both');
+    other.lastActive = 0;
+    tabs.sleepIdle();
+    assert.ok(other.view, 'a side on screen never goes to sleep');
+    tabs.close(third.id);
+
+    await shellEval('window.tern.setSideOpen(true)');
+    assert.equal(win.contentView.children.at(-1).webContents, shell);
+    await shellEval('window.tern.setSideOpen(false)');
+    assert.notEqual(win.contentView.children.at(-1).webContents, shell, 'both pages go back on top');
+    assert.ok(win.contentView.children.includes(tab.view) && win.contentView.children.includes(other.view));
+
+    const labels = (items) => items.map((i) => i.label).filter(Boolean);
+    assert.ok(labels(tabs.tabMenuItems(tab)).includes('Close split view'));
+
+    tabs.closeSplit(tab.id);
+    assert.ok(!win.contentView.children.includes(other.view), 'closing the split hides the other tab');
+    assert.deepEqual(tab.view.getBounds(), before, 'and the page gets its space back');
+    assert.ok(labels(tabs.tabMenuItems(tab)).includes('Split view with new tab'));
+
+    tabs.startSplit(tab.id, other.id);
+    tabs.activate(other.id);
+    tabs.close(other.id);
+    assert.equal(tabs.activeId, tab.id, 'closing the active side lands on its partner');
+    assert.deepEqual(tab.view.getBounds(), before);
+    assert.equal(tabs.splits.length, 0);
+    await sleep(200);
+    assert.equal(await inShell(() => document.getElementById('split-divider').hidden), true);
+  });
+
+  await check('split view: a new tab side shows its card on that side, and the panel still fits', async () => {
+    const before = tab.view.getBounds();
+    tabs.startSplit(tab.id);
+    const fresh = tabs.active;
+    assert.notEqual(fresh.id, tab.id);
+    await sleep(200);
+    assert.ok(await inShell(() => !document.getElementById('newtab').hidden));
+    assert.notEqual(await inShell(() => document.getElementById('content').style.padding), '');
+    await shellEval("showPanel('customize')");
+    await sleep(300);
+    assert.ok(tab.view.getBounds().width < before.width / 2, 'pages share the smaller space');
+    await shellEval('togglePanel(openPanel)');
+    tabs.close(fresh.id);
+    await sleep(200);
+    assert.deepEqual(tab.view.getBounds(), before);
+    assert.equal(await inShell(() => document.getElementById('content').style.padding), '');
+  });
+
+  await check('split view: the divider can be dragged, double-clicked and moved with the keyboard', async () => {
+    const other = tabs.create(`${base}/split-drag`, { activate: false });
+    tabs.startSplit(tab.id, other.id);
+    await waitFor(() => inShell(() => !document.getElementById('split-divider').hidden), 2000);
+    await inShell(() => document.getElementById('split-divider').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' })));
+    await waitFor(() => Math.abs(tabs.splitFor(tab).ratio - 0.52) < 0.001, 2000);
+    await inShell(() => document.getElementById('split-divider').dispatchEvent(new MouseEvent('dblclick')));
+    await waitFor(() => tabs.splitFor(tab).ratio === 0.5, 2000);
+    const clientX = await inShell(() => {
+      const c = document.getElementById('content').getBoundingClientRect();
+      return Math.round(c.left + c.width * 0.65);
+    });
+    await shellEval("setLift('split', true)");
+    await waitFor(() => win.contentView.children.at(-1).webContents === shell, 2000);
+    await shellEval(`api.setSplitRatio(${0.65})`);
+    await waitFor(() => tabs.splitFor(tab).ratio === 0.65, 2000);
+    await shellEval("setLift('split', false)");
+    await waitFor(() => win.contentView.children.at(-1).webContents !== shell, 2000);
+    assert.ok(clientX > 0);
+    tabs.close(other.id);
+    tabs.activate(tab.id);
+  });
+
   await check('tabs: pin keeps a tab first, and duplicate, close others and close right work', async () => {
     const a = tabs.create(`${base}/a`, { activate: false });
     const c = tabs.create(`${base}/c`, { activate: false });

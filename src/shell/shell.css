@@ -362,3 +362,9 @@ body:not([data-tabs="top"]) .tab-group { max-width: none; height: 22px; margin-t
 body:not([data-tabs="top"]) .tab.in-group { box-shadow: inset 2px 0 0 var(--group-color); }
 body[data-side="auto"]:not(.side-open) .tab-group { justify-content: center; padding: 0; height: 10px; min-width: 0; }
 body[data-side="auto"]:not(.side-open) .tab-group .group-name { display: none; }
+
+/* Split view */
+#split-bar { position: absolute; top: 0; height: 2px; background: var(--accent); }
+#split-divider { position: absolute; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 4; background: var(--line); }
+#split-divider:hover, #split-divider.dragging, #split-divider:focus-visible { background: var(--accent); outline: 0; }
+.tab.split-partner { background: var(--raised); color: var(--text); opacity: .8; }

@@ -9,6 +9,11 @@ Download `Tern-Setup-x.y.z.exe` from the [latest release](https://github.com/Ayu
 and run it. It installs for your Windows account only, without needing admin rights. Because the
 installer isn't code-signed yet, Windows SmartScreen may warn you: choose **More info**, then **Run anyway**.
 
+## Split view
+
+Right-click a tab and choose Split view with new tab, or pick another open tab, to see two pages side by side. Drag the
+divider to resize, double-click it to even out, and click a side to make it active. Splits aren't remembered after closing Tern.
+
 ## Tab groups
 
 Right-click a tab and choose Add to new group. Click a group's label to collapse it, double-click to rename it, and

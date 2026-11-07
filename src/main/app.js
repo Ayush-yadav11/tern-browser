@@ -480,6 +480,7 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
   });
   tabs.on('fullscreen', pushState);
   tabs.on('rename-group', (id) => send('tern:group-rename-start', id));
+  tabs.on('focus-address', () => focusAddress());
   tabs.on('found', (result) => send('tern:found', {
     active: result.activeMatchOrdinal,
     total: result.matches,
@@ -541,14 +542,10 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     'tern:side-open': (open) => {
       sideOpen = Boolean(open);
       // Reordering views can move keyboard focus, and hovering shouldn't interrupt typing.
-      const page = tabs.active?.view;
       const shown = tabs.contentsFor(tabs.active);
       const pageHadFocus = Boolean(shown?.isFocused());
       if (sideOpen) win.contentView.addChildView(shellView);
-      else if (page && win.contentView.children.includes(page)) {
-        win.contentView.addChildView(page);
-        if (tabs.active.readerView) win.contentView.addChildView(tabs.active.readerView);
-      }
+      else tabs.raisePages();
       raiseOverlays();
       if (pageHadFocus) shown.focus();
     },
@@ -577,6 +574,9 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     },
     'tern:tab-menu': (id) => tabs.tabMenu(id),
     'tern:toggle-muted': (id) => tabs.toggleMuted(id),
+    'tern:split-start': (id, otherId) => tabs.startSplit(id, otherId),
+    'tern:split-close': (id) => tabs.closeSplit(id),
+    'tern:split-ratio': (ratio) => tabs.setSplitRatio(Number(ratio)),
     'tern:drop-tab': (id, targetId) => tabs.dropTab(id, targetId),
     'tern:drop-on-group': (id, groupId) => tabs.dropOnGroup(id, groupId),
     'tern:new-group': (id) => tabs.newGroup(id),
