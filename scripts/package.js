@@ -39,7 +39,7 @@ async function packageApp({ name = 'Tern', version, feedUrl, out = path.join(roo
     icon: path.join(root, 'assets', 'icon.ico'),
     appBundleId: 'app.tern.browser',
     win32metadata: { CompanyName: 'Tern', FileDescription: 'Tern Browser', ProductName: name },
-    ignore: [/^\/test($|\/)/, /^\/out($|\/)/, /^\/scripts($|\/)/, /^\/docs($|\/)/, /^\/\.github($|\/)/, /^\/vendor($|\/)/, /(?<!LICENSE)\.md$/i],
+    ignore: [/^\/test($|\/)/, /^\/out($|\/)/, /^\/scripts($|\/)/, /^\/docs($|\/)/, /^\/\.github($|\/)/, /^\/vendor($|\/)/, /^\/build($|\/)/, /(?<!LICENSE)\.md$/i],
     afterCopy: [async ({ buildPath }) => {
       const file = path.join(buildPath, 'package.json');
       const pkg = JSON.parse(fs.readFileSync(file, 'utf8'));

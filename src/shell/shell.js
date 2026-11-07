@@ -676,6 +676,7 @@ function showPanel(name, tab) {
     renderLibrary.historyDirty = true;
     $('library-search').value = '';
   }
+  if (name === 'customize') renderDefaultBrowser();
   if (name === 'downloads') {
     freshDownload = false;
     api.refreshDownloads();
@@ -1209,6 +1210,16 @@ function setSeg(id, value) {
   }
 }
 
+async function renderDefaultBrowser() {
+  const { installed, isDefault } = await api.defaultBrowserStatus();
+  $('default-status').textContent = isDefault
+    ? 'Tern is your default browser.'
+    : installed
+      ? 'Windows asks you to choose this yourself. The button opens the right page in Settings, where you pick Tern.'
+      : 'Available once Tern is installed with its installer.';
+  $('default-open').hidden = !installed || isDefault;
+}
+
 function renderCustomize() {
   const s = state.settings;
   for (const el of $('themes').children) el.classList.toggle('on', el.dataset.value === s.theme);
@@ -1344,6 +1355,7 @@ function wirePanel() {
   $('auto-update').addEventListener('change', (e) => api.setSettings({ autoUpdate: e.target.checked }));
   $('update-check').addEventListener('click', () => api.checkForUpdate());
   $('tor-open').addEventListener('click', () => api.newTorTab());
+  $('default-open').addEventListener('click', () => api.openDefaultBrowserSettings());
   $('import-file').addEventListener('click', async () => showImportResult(await api.importFile()));
   $('export-bookmarks').addEventListener('click', async () => showImportResult(await api.exportBookmarks()));
   $('reader-smaller').addEventListener('click', () => api.setSettings({ readerFontSize: state.settings.readerFontSize - 1 }));

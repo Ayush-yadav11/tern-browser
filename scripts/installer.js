@@ -35,6 +35,7 @@ async function buildInstaller({
         signAndEditExecutable: false,
       },
       nsis: {
+        include: path.join(root, 'build', 'installer.nsh'),
         oneClick: true,
         perMachine: false,
         createDesktopShortcut: desktopShortcut,

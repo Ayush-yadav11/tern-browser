@@ -6,6 +6,7 @@ const { app, BaseWindow, Menu, WebContentsView, dialog, ipcMain, safeStorage, se
 const { applyFlags } = require('./flags');
 const { AdBlock } = require('./adblock');
 const { Downloads } = require('./downloads');
+const { defaultAppsPage, defaultBrowserStatus } = require('./default-browser');
 const { Library } = require('./library');
 const { EXTRACT_TEXT, PageIndex } = require('./page-index');
 const { Tabs } = require('./tabs');
@@ -547,6 +548,9 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     ];
   };
 
+  // A property so tests can check this without opening Windows Settings on screen.
+  const system = { openExternal: (url) => electronShell.openExternal(url) };
+
   const fromShell = (handler) => (event, ...args) => {
     if (event.sender !== shell) throw new Error('Rejected IPC from outside the browser UI');
     return handler(...args);
@@ -592,6 +596,8 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     },
     'tern:tab-menu': (id) => tabs.tabMenu(id),
     'tern:toggle-muted': (id) => tabs.toggleMuted(id),
+    'tern:default-browser-status': () => defaultBrowserStatus(app.getName()),
+    'tern:default-browser-open': () => system.openExternal(defaultAppsPage(app.getName())),
     'tern:split-start': (id, otherId) => tabs.startSplit(id, otherId),
     'tern:split-close': (id) => tabs.closeSplit(id),
     'tern:split-ratio': (ratio) => tabs.setSplitRatio(Number(ratio)),
@@ -930,6 +936,7 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     downloads,
     updater,
     mainMenuItems,
+    system,
     pageIndex,
     pageText,
     importBookmarkFiles,

@@ -75,6 +75,11 @@ result, and contacts api.ipify.org only when pressed.
 This hides your IP, not who you are. Signing in or typing your details tells a site who you are, and sites can
 still recognize a browser by its setup. Tern's own update checks go directly to GitHub, not through Tor or the proxy.
 
+## Default browser
+
+The installer lists Tern with Windows as a browser. Windows only lets you choose the default yourself, so Customize >
+Default browser has a button that opens the right page in Settings. Portable copies can't do this.
+
 ## Updates
 
 The installed app checks for new versions when it starts and every 6 hours. It downloads them in the
@@ -171,7 +176,7 @@ to `THEMES` in both `src/shell/shell.js` and `src/main/settings.js`.
 ## Known limits
 
 - No sync or password manager yet, and only one window at a time.
-- Tern can't be set as the default browser yet, and there's no spell check.
+- There's no spell check yet.
 - History keeps the last 90 days, up to 5,000 pages. There's no private window yet.
 - Downloads can't be picked up again after Tern is closed.
 - Netflix-style protected video will not play, because Electron ships without Widevine.

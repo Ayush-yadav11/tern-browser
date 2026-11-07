@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld('tern', {
   findStop: invoke('tern:find-stop'),
   focusPage: invoke('tern:focus-page'),
   open: invoke('tern:open'),
+  defaultBrowserStatus: invoke('tern:default-browser-status'),
+  openDefaultBrowserSettings: invoke('tern:default-browser-open'),
   startSplit: invoke('tern:split-start'),
   closeSplit: invoke('tern:split-close'),
   setSplitRatio: invoke('tern:split-ratio'),

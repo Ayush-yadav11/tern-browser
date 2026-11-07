@@ -104,6 +104,23 @@ function uninstallEntry() {
   }
 }
 
+// What the installer tells Windows about the browser.
+function registration() {
+  const read = (key, value) => {
+    try {
+      const flag = value === '' ? '/ve' : `/v "${value}"`;
+      return execSync(`reg query "HKCU\\${key}" ${flag}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch {
+      return null;
+    }
+  };
+  return {
+    registered: read('Software\\RegisteredApplications', NAME),
+    https: read(`Software\\Clients\\StartMenuInternet\\${NAME}\\Capabilities\\URLAssociations`, 'https'),
+    command: read(`Software\\Classes\\${NAME}URL\\shell\\open\\command`, ''),
+  };
+}
+
 function cleanUp() {
   stopApp();
   const uninstaller = path.join(installDir, `Uninstall ${NAME}.exe`);
@@ -177,6 +194,11 @@ async function buildVersion(version) {
   const startMenu = path.join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', `${NAME}.lnk`);
   assert.ok(fs.existsSync(startMenu), 'Start Menu shortcut');
   console.log('PASS  Start Menu shortcut exists');
+  const listed = registration();
+  assert.ok(listed.registered?.includes(`StartMenuInternet\\${NAME}\\Capabilities`), 'listed with Windows as a browser');
+  assert.ok(listed.https?.includes(`${NAME}URL`), 'offers to open https links');
+  assert.ok(listed.command?.includes(`${NAME}.exe`) && listed.command.includes('"%1"'), 'opens links with the installed program');
+  console.log('PASS  registered with Windows as a browser');
 
   const server = await serve(newBuild.outDir);
   try {
@@ -233,6 +255,12 @@ async function buildVersion(version) {
     assert.equal(await shell.evaluate('state.settings.theme'), 'moss', 'settings kept');
     await waitFor(() => shell.evaluate(`state.update.status === 'idle' || state.update.status === 'current'`), 5000, 'updater idle');
     console.log(`PASS  running ${NEW}, in the same folder, settings kept`);
+    assert.ok(registration().registered, 'updating keeps the browser registered');
+    console.log('PASS  still registered as a browser after updating');
+    const beforeTabs = await shell.evaluate('state.tabs.length');
+    spawn(path.join(installDir, `${NAME}.exe`), ['https://link-from-another-app.example/page'], { stdio: 'ignore', env: { ...process.env, TERN_TEST: '1' } });
+    await waitFor(() => shell.evaluate(`state.tabs.length > ${beforeTabs} && state.tabs.some((t) => t.url.startsWith('https://link-from-another-app.example/'))`), 15000, 'a link from another program to open in a tab');
+    console.log('PASS  a link from another program opens in the running browser');
     shell.close();
     stopApp();
     await sleep(1500);
@@ -247,6 +275,9 @@ async function buildVersion(version) {
   assert.ok(!fs.existsSync(startMenu), 'shortcut removed');
   assert.ok(fs.existsSync(path.join(profile, 'settings.json')), 'profile kept');
   console.log('PASS  program removed, your data kept');
+  const gone = registration();
+  assert.ok(!gone.registered && !gone.https && !gone.command, 'uninstalling removes the browser registration');
+  console.log('PASS  browser registration removed');
 
   // Windows holds profile files for a moment after the app exits.
   await sleep(4000);

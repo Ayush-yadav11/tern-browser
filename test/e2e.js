@@ -14,6 +14,7 @@ const { start } = require('../src/main/app');
 const { SEARCH_SHORTCUTS, resolveInput, stripTracking } = require('../src/main/url');
 const { clean } = require('../src/main/settings');
 const { isRisky } = require('../src/main/downloads');
+const { defaultAppsPage, defaultBrowserStatus, regValue } = require('../src/main/default-browser');
 const { Library } = require('../src/main/library');
 const { PageIndex } = require('../src/main/page-index');
 const { findBrowsers, parseBookmarksHtml, parseChromiumBookmarks, toBookmarksHtml } = require('../src/main/bookmarks-io');
@@ -979,6 +980,31 @@ async function main() {
     assert.ok(clientX > 0);
     tabs.close(other.id);
     tabs.activate(tab.id);
+  });
+
+  await check('default browser: knows if it is registered and if it is the default', async () => {
+    assert.equal(regValue('\r\nHKEY_CURRENT_USER\\x\r\n    ProgId    REG_SZ    TernURL\r\n\r\n', 'ProgId'), 'TernURL');
+    assert.equal(regValue('nothing here', 'ProgId'), null);
+    const fake = (values) => async (_key, name) => values[name] ?? null;
+    assert.deepEqual(await defaultBrowserStatus('Tern', fake({})), { installed: false, isDefault: false });
+    assert.deepEqual(await defaultBrowserStatus('Tern', fake({ Tern: 'path', ProgId: 'SomeoneElse' })), { installed: true, isDefault: false });
+    assert.deepEqual(await defaultBrowserStatus('Tern', fake({ Tern: 'path', ProgId: 'TernURL' })), { installed: true, isDefault: true });
+    assert.equal(defaultAppsPage('Tern'), 'ms-settings:defaultapps?registeredAppUser=Tern');
+  });
+
+  await check('default browser: an uninstalled copy says so, and the button only ever opens Windows Settings', async () => {
+    await shellEval("showPanel('customize')");
+    await waitFor(() => inShell(() => document.getElementById('default-status').textContent.length > 0), 4000);
+    assert.ok((await inShell(() => document.getElementById('default-status').textContent)).includes('installed'));
+    assert.equal(await inShell(() => document.getElementById('default-open').hidden), true);
+    const opened = [];
+    const real = b.system.openExternal;
+    b.system.openExternal = async (url) => opened.push(url);
+    await shellEval('window.tern.openDefaultBrowserSettings()');
+    b.system.openExternal = real;
+    assert.equal(opened.length, 1);
+    assert.ok(opened[0].startsWith('ms-settings:defaultapps?registeredAppUser='));
+    await shellEval('togglePanel(openPanel)');
   });
 
   await check('tabs: pin keeps a tab first, and duplicate, close others and close right work', async () => {
