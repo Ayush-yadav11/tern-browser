@@ -10,7 +10,7 @@ const { Tabs } = require('./tabs');
 const { Tor, torPath } = require('./tor');
 const { Updater } = require('./updater');
 const { DEFAULTS, PROXY_SERVER, clean, JsonFile } = require('./settings');
-const { SEARCH_ENGINES, hostOf, isWebUrl, resolveInput } = require('./url');
+const { SEARCH_ENGINES, SEARCH_SHORTCUTS, hostOf, isWebUrl, parseShortcut, resolveInput } = require('./url');
 
 applyFlags(app);
 
@@ -146,6 +146,7 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
           filtersUpdatedAt: adblock.updatedAt,
         },
         searchEngines: Object.entries(SEARCH_ENGINES).map(([id, e]) => ({ id, name: e.name })),
+        searchShortcuts: Object.entries(SEARCH_SHORTCUTS).map(([id, e]) => ({ id, name: e.name })),
       });
       if (!win.isDestroyed()) win.setTitle(active?.title ? `${active.title} - Tern` : 'Tern');
     }, 16);
@@ -427,9 +428,15 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     if (!url) return [];
     const engine = SEARCH_ENGINES[settings.searchEngine];
     const isSearch = url.startsWith(engine.url);
-    const first = isSearch
+    const shortcut = parseShortcut(text);
+    let first = isSearch
       ? { kind: 'search', label: text, sub: `Search ${engine.name}`, value: text }
       : { kind: 'go', label: url, sub: 'Go to this address', value: url };
+    if (shortcut) {
+      first = shortcut.query
+        ? { kind: 'search', label: shortcut.query, sub: `Search ${shortcut.shortcut.name}`, value: text }
+        : { kind: 'go', label: shortcut.shortcut.name, sub: 'Go to this site', value: text };
+    }
     const matches = library.suggest(text)
       .filter((m) => m.url !== url)
       .map((m) => ({ kind: m.kind, label: m.title || m.url, sub: m.title ? m.url : '', value: m.url }));

@@ -9,6 +9,11 @@ Download `Tern-Setup-x.y.z.exe` from the [latest release](https://github.com/Ayu
 and run it. It installs for your Windows account only, without needing admin rights. Because the
 installer isn't code-signed yet, Windows SmartScreen may warn you: choose **More info**, then **Run anyway**.
 
+## Search shortcuts
+
+Type `!w cats` or `cats !w` in the address bar to search that site directly. Tern knows `!w`, `!yt`, `!g`, `!d`, `!gh`,
+`!r`, `!a`, `!so`, `!mdn`, `!npm`, `!map`, `!imdb` and `!wt`. The list is built in, so only the site you asked for sees the search.
+
 ## Secure connections
 
 HTTPS-only mode is on by default. Tern moves web addresses to https, and if a site has no secure version it asks

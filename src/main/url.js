@@ -6,6 +6,34 @@ const SEARCH_ENGINES = {
   startpage: { name: 'Startpage', url: 'https://www.startpage.com/sp/search?query=' },
 };
 
+// Typing "!w cats" or "cats !w" searches that site directly. The list lives here, so
+// using a shortcut tells nobody but the site you asked for.
+const SEARCH_SHORTCUTS = {
+  w: { name: 'Wikipedia', url: 'https://en.wikipedia.org/wiki/Special:Search?search=', home: 'https://en.wikipedia.org/' },
+  yt: { name: 'YouTube', url: 'https://www.youtube.com/results?search_query=', home: 'https://www.youtube.com/' },
+  g: { name: 'Google', url: 'https://www.google.com/search?udm=14&q=', home: 'https://www.google.com/' },
+  d: { name: 'DuckDuckGo', url: 'https://noai.duckduckgo.com/?q=', home: 'https://noai.duckduckgo.com/' },
+  gh: { name: 'GitHub', url: 'https://github.com/search?q=', home: 'https://github.com/' },
+  r: { name: 'Reddit', url: 'https://www.reddit.com/search/?q=', home: 'https://www.reddit.com/' },
+  a: { name: 'Amazon', url: 'https://www.amazon.in/s?k=', home: 'https://www.amazon.in/' },
+  so: { name: 'Stack Overflow', url: 'https://stackoverflow.com/search?q=', home: 'https://stackoverflow.com/' },
+  mdn: { name: 'MDN', url: 'https://developer.mozilla.org/search?q=', home: 'https://developer.mozilla.org/' },
+  npm: { name: 'npm', url: 'https://www.npmjs.com/search?q=', home: 'https://www.npmjs.com/' },
+  map: { name: 'OpenStreetMap', url: 'https://www.openstreetmap.org/search?query=', home: 'https://www.openstreetmap.org/' },
+  imdb: { name: 'IMDb', url: 'https://www.imdb.com/find/?q=', home: 'https://www.imdb.com/' },
+  wt: { name: 'Wiktionary', url: 'https://en.wiktionary.org/wiki/Special:Search?search=', home: 'https://en.wiktionary.org/' },
+};
+
+// Returns the shortcut and what to search for, or null if the text doesn't use a known one.
+function parseShortcut(text) {
+  const match = /^!(\S+)(?:\s+(.*))?$/.exec(text) ?? /^(.*\S)\s+!(\S+)$/.exec(text);
+  if (!match) return null;
+  const leading = text.startsWith('!');
+  const shortcut = SEARCH_SHORTCUTS[(leading ? match[1] : match[2]).toLowerCase()];
+  if (!shortcut) return null;
+  return { shortcut, query: ((leading ? match[2] : match[1]) ?? '').trim() };
+}
+
 const HOST_RE = /^(?:localhost|\d{1,3}(?:\.\d{1,3}){3}|(?:[a-z0-9-]+\.)+[a-z]{2,})(?::\d{1,5})?(?:[/?#].*)?$/i;
 const LOCAL_RE = /^(?:localhost|\d{1,3}(?:\.\d{1,3}){3})(?::\d{1,5})?(?:[/?#].*)?$/i;
 
@@ -23,6 +51,8 @@ function isWebUrl(value) {
 function resolveInput(input, engineId) {
   const text = String(input ?? '').trim();
   if (!text) return null;
+  const parsed = parseShortcut(text);
+  if (parsed) return parsed.query ? parsed.shortcut.url + encodeURIComponent(parsed.query) : parsed.shortcut.home;
   if (/^https?:\/\//i.test(text) && isWebUrl(text)) return new URL(text).href;
   if (!/\s/.test(text) && HOST_RE.test(text)) {
     const scheme = LOCAL_RE.test(text) ? 'http://' : 'https://';
@@ -87,4 +117,4 @@ function decodeName(name) {
 
 const isYouTubeHost = (host) => /(^|\.)youtube\.com$/.test(host);
 
-module.exports = { SEARCH_ENGINES, isWebUrl, resolveInput, hostOf, isLocalHost, isYouTubeHost, stripTracking };
+module.exports = { SEARCH_ENGINES, SEARCH_SHORTCUTS, parseShortcut, isWebUrl, resolveInput, hostOf, isLocalHost, isYouTubeHost, stripTracking };

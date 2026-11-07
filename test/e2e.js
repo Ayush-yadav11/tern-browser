@@ -11,7 +11,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { app } = require('electron');
 const { start } = require('../src/main/app');
-const { resolveInput, stripTracking } = require('../src/main/url');
+const { SEARCH_SHORTCUTS, resolveInput, stripTracking } = require('../src/main/url');
 const { clean } = require('../src/main/settings');
 const { isRisky } = require('../src/main/downloads');
 const { Library } = require('../src/main/library');
@@ -189,6 +189,20 @@ async function main() {
     for (const bad of ['javascript:alert(1)', 'file:///C:/Windows/win.ini', 'chrome://settings', 'data:text/html,x']) {
       assert.ok(resolveInput(bad, 'ddg-noai').startsWith('https://noai.duckduckgo.com/'), bad);
     }
+  });
+
+  await check('search shortcuts: go straight to that site, from either end of the text', () => {
+    assert.equal(resolveInput('!w black holes', 'ddg-noai'), 'https://en.wikipedia.org/wiki/Special:Search?search=black%20holes');
+    assert.equal(resolveInput('black holes !w', 'ddg-noai'), 'https://en.wikipedia.org/wiki/Special:Search?search=black%20holes');
+    assert.equal(resolveInput('!YT cats', 'ddg-noai'), 'https://www.youtube.com/results?search_query=cats', 'capitals are fine');
+    assert.equal(resolveInput('!gh', 'ddg-noai'), 'https://github.com/', 'alone it opens the site');
+    assert.equal(resolveInput('a&b=c !w', 'ddg-noai'), 'https://en.wikipedia.org/wiki/Special:Search?search=a%26b%3Dc', 'text is encoded');
+    for (const shortcut of Object.values(SEARCH_SHORTCUTS)) {
+      assert.ok(shortcut.url.startsWith('https://') && shortcut.home.startsWith('https://'), shortcut.name);
+    }
+    assert.ok(resolveInput('!nosuchshortcut cats', 'ddg-noai').startsWith('https://noai.duckduckgo.com/'), 'unknown ones are just searched');
+    assert.ok(resolveInput('wow! great', 'ddg-noai').startsWith('https://noai.duckduckgo.com/'), 'ordinary punctuation is left alone');
+    assert.ok(resolveInput('javascript:alert(1) !w', 'ddg-noai').startsWith('https://en.wikipedia.org/'), 'only ever opens the listed site');
   });
 
   await check('settings: a damaged file cannot lose controls or set bad values', () => {
@@ -586,6 +600,34 @@ async function main() {
     assert.notEqual(await wc().executeJavaScript('navigator.globalPrivacyControl'), true);
     b.updateSettings({ globalPrivacyControl: true });
     server.off('request', record);
+  });
+
+  await check('search shortcuts: work from the address bar, and the suggestion says where it will go', async () => {
+    shell.focus();
+    await sleep(300); // Lets the previous check's settings update finish refreshing the address bar.
+    await shellEval(`(() => {
+      const input = document.getElementById('address-input');
+      input.focus();
+      input.value = '!w cats';
+      input.dispatchEvent(new Event('input'));
+    })()`);
+    await waitFor(() => inShell(() => suggestions.length >= 1), 3000);
+    assert.deepEqual(await shellEval('({ kind: suggestions[0].kind, label: suggestions[0].label, sub: suggestions[0].sub })'), { kind: 'search', label: 'cats', sub: 'Search Wikipedia' });
+    b.tabSession.protocol.handle('https', () => new Response('<!doctype html><title>wiki</title>', { headers: { 'content-type': 'text/html' } }));
+    try {
+      await inShell(() => document.getElementById('address-input').form.requestSubmit());
+      await waitFor(() => tab.url === 'https://en.wikipedia.org/wiki/Special:Search?search=cats' && !tab.loading, 4000);
+    } finally {
+      b.tabSession.protocol.unhandle('https');
+    }
+    await load(`${base}/ads`);
+  });
+
+  await check('Customize: panel links are each on their own line, and shortcuts are listed', async () => {
+    await shellEval("showPanel('customize')");
+    assert.equal(await inShell(() => getComputedStyle(document.getElementById('proxy-save')).display), 'block');
+    assert.ok(await inShell(() => document.querySelectorAll('#shortcut-list dt').length > 5));
+    await shellEval('togglePanel(openPanel)');
   });
 
   await check('tabs: pin keeps a tab first, and duplicate, close others and close right work', async () => {

@@ -783,6 +783,10 @@ function renderCustomize() {
     for (const e of state.searchEngines) engine.add(new Option(e.name, e.id));
   }
   engine.value = s.searchEngine;
+  const shortcutList = $('shortcut-list');
+  if (!shortcutList.children.length) {
+    for (const { id, name } of state.searchShortcuts) shortcutList.append(make('dt', '', `!${id}`), make('dd', '', name));
+  }
   $('sleep').value = String(s.sleepMinutes);
   $('bookmarks-bar-toggle').checked = s.bookmarksBar;
   $('save-history').checked = s.saveHistory;

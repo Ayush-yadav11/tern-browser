@@ -284,3 +284,13 @@ body[data-tabs="top"] .tab.pinned .tab-title { display: none; }
 #palette-list .p-kind { flex: none; width: 66px; color: var(--muted); font-size: 11px; }
 #palette-list li.on .p-sub, #palette-list li.on .p-kind { color: inherit; opacity: .8; }
 #palette-empty { padding: 14px; color: var(--muted); text-align: center; }
+
+/* Panel links stack rather than running together. */
+.panel-body > .link { display: block; padding: 4px 0; margin: 2px 0; text-align: left; }
+.shortcuts { padding: 6px 0; }
+.shortcuts summary { cursor: default; }
+.shortcuts summary:hover { color: var(--accent); }
+.shortcuts .muted { margin: 8px 0 0; }
+.shortcuts code { font-family: Consolas, monospace; color: var(--text); }
+.shortcuts .facts { margin-top: 8px; padding-top: 8px; }
+.shortcuts dt { font-family: Consolas, monospace; font-size: 12px; }
