@@ -1469,12 +1469,32 @@ const SIDE_CLOSE_DELAY_MS = 250;
 const SIDE_ANIMATION_MS = 130;
 
 // Anything drawn over the page lifts the interface, and it's lowered once nothing needs it.
+// The order matters: the interface is only raised once its see-through version is on screen,
+// and only made solid again once it's back under the page. Either way round, its solid
+// background would cover the page for a frame, which shows as a blink.
 const lifts = new Set();
-function setLift(reason, on) {
+const LIFT_FRAME_LIMIT_MS = 60;
+const nextPaint = () => new Promise((resolve) => {
+  // A frame callback can stall while the window is in the background, so this never waits long.
+  const timer = setTimeout(resolve, LIFT_FRAME_LIMIT_MS);
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    clearTimeout(timer);
+    resolve();
+  }));
+});
+async function setLift(reason, on) {
   if (on) lifts.add(reason);
   else lifts.delete(reason);
-  document.body.classList.toggle('lifted', lifts.size > 0);
-  return api.setSideOpen(lifts.size > 0);
+  if (lifts.size > 0) {
+    document.body.classList.add('lifted');
+    await nextPaint();
+    // Lowered again while waiting, which already took care of everything.
+    if (lifts.size === 0) return;
+    await api.setSideOpen(true);
+    return;
+  }
+  await api.setSideOpen(false);
+  if (lifts.size === 0) document.body.classList.remove('lifted');
 }
 
 async function setSideOpen(open) {

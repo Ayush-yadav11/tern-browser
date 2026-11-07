@@ -410,6 +410,22 @@ async function main() {
     await waitFor(() => wc().isFocused(), 2000);
   });
 
+  await check('lifting: the interface is see-through before it goes over the page, and until it is back under', async () => {
+    const shellOnTop = () => win.contentView.children.at(-1).webContents === shell;
+    assert.equal(shellOnTop(), false);
+    // Not awaited, to look at the moment in between.
+    const lifted = await shellEval("window.liftDone = setLift('test', true); document.body.classList.contains('lifted')");
+    assert.equal(lifted, true, 'see-through straight away');
+    assert.equal(shellOnTop(), false, 'but not raised until that has been drawn');
+    await shellEval('window.liftDone');
+    assert.equal(shellOnTop(), true);
+    const stillSeeThrough = await shellEval("window.liftDone = setLift('test', false); document.body.classList.contains('lifted')");
+    assert.equal(stillSeeThrough, true, 'stays see-through while it goes back under');
+    await shellEval('window.liftDone');
+    assert.equal(shellOnTop(), false);
+    assert.equal(await inShell(() => document.body.classList.contains('lifted')), false);
+  });
+
   const typePalette = async (text) => {
     await shellEval('openPalette()');
     await shellEval(`(() => {
