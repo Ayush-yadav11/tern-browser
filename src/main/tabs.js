@@ -11,6 +11,8 @@ const HTTPS_WAIT_TOR_MS = 30 * 1000;
 const NOT_AN_HTTPS_PROBLEM = new Set([-3, -105, -106, -120, -130, -137]);
 
 const MAX_CLOSED = 20;
+const GROUP_COLORS = ['blue', 'red', 'yellow', 'green', 'pink', 'purple', 'teal', 'grey'];
+const MAX_GROUP_NAME = 60;
 
 // A tab only owns a renderer while it is awake. New tabs and sleeping tabs have
 // view === null, and the shell draws whatever belongs in the content area instead.
@@ -33,6 +35,8 @@ class Tabs extends EventEmitter {
     this.httpAllowed = new Set();
     this.httpsWaitMs = HTTPS_WAIT_MS;
     this.tabs = [];
+    this.groups = [];
+    this.nextGroupId = 1;
     this.activeId = null;
     this.nextId = 1;
     this.bounds = { x: 0, y: 0, width: 0, height: 0 };
@@ -57,6 +61,7 @@ class Tabs extends EventEmitter {
   publicState() {
     return {
       activeId: this.activeId,
+      groups: this.groups,
       tabs: this.tabs.map((t) => ({
         id: t.id,
         url: t.url,
@@ -76,6 +81,7 @@ class Tabs extends EventEmitter {
         readerNote: t.readerNote ?? '',
         zoom: t.view ? Math.round(t.view.webContents.getZoomFactor() * 100) : 100,
         pinned: t.pinned,
+        group: t.group,
       })),
     };
   }
@@ -84,11 +90,12 @@ class Tabs extends EventEmitter {
     this.emit('changed');
   }
 
-  create(url = '', { activate = true, title = '', index, openedByPage = false, tor = false, pinned = false } = {}) {
+  create(url = '', { activate = true, title = '', index, openedByPage = false, tor = false, pinned = false, group = null } = {}) {
     const tab = {
       openedByPage,
       tor,
       pinned,
+      group: tor || pinned ? null : group,
       muted: false,
       id: this.nextId++,
       url: isWebUrl(url) ? url : '',
@@ -104,6 +111,7 @@ class Tabs extends EventEmitter {
     tab.url = tab.url && this.secureUrl(tab, tab.url);
     if (Number.isInteger(index)) this.tabs.splice(index, 0, tab);
     else this.tabs.push(tab);
+    this.keepPinnedFirst();
     if (activate) this.activate(tab.id);
     else this.changed();
     return tab;
@@ -112,6 +120,8 @@ class Tabs extends EventEmitter {
   activate(id) {
     const tab = this.byId(id);
     if (!tab) return;
+    const ownGroup = this.groupOf(tab);
+    if (ownGroup) ownGroup.collapsed = false;
     const previous = this.active;
     if (previous?.view && previous !== tab) {
       this.window.contentView.removeChildView(previous.view);
@@ -234,6 +244,7 @@ class Tabs extends EventEmitter {
     }
     this.destroyView(tab);
     this.tabs.splice(index, 1);
+    this.keepPinnedFirst();
     if (tab.tor && !this.tabs.some((t) => t.tor)) this.emit('last-tor-tab-closed');
     if (this.tabs.length === 0) {
       this.emit('empty');
@@ -261,14 +272,164 @@ class Tabs extends EventEmitter {
     this.changed();
   }
 
+  // Pinned tabs first, each group's tabs side by side, and no group left with no tabs.
   keepPinnedFirst() {
-    this.tabs = [...this.tabs.filter((t) => t.pinned), ...this.tabs.filter((t) => !t.pinned)];
+    const rest = this.tabs.filter((t) => !t.pinned);
+    const ordered = this.tabs.filter((t) => t.pinned);
+    const placed = new Set();
+    for (const tab of rest) {
+      if (tab.group === null) {
+        ordered.push(tab);
+      } else if (!placed.has(tab.group)) {
+        placed.add(tab.group);
+        ordered.push(...rest.filter((t) => t.group === tab.group));
+      }
+    }
+    this.tabs = ordered;
+    this.groups = this.groups.filter((g) => placed.has(g.id));
+  }
+
+  groupOf(tab) {
+    return this.groups.find((g) => g.id === tab?.group) ?? null;
+  }
+
+  // Tor tabs stay out of groups, because groups are saved and Tor tabs leave nothing behind.
+  newGroup(tabId) {
+    const tab = this.byId(tabId);
+    if (!tab || tab.tor) return null;
+    const color = GROUP_COLORS[this.groups.length % GROUP_COLORS.length];
+    const group = { id: this.nextGroupId++, name: '', color, collapsed: false };
+    this.groups.push(group);
+    tab.pinned = false;
+    tab.group = group.id;
+    this.keepPinnedFirst();
+    this.changed();
+    this.emit('rename-group', group.id);
+    return group;
+  }
+
+  addToGroup(tabId, groupId) {
+    const tab = this.byId(tabId);
+    if (!tab || tab.tor || !this.groups.some((g) => g.id === groupId)) return;
+    tab.pinned = false;
+    tab.group = groupId;
+    this.keepPinnedFirst();
+    this.changed();
+  }
+
+  removeFromGroup(tabId) {
+    const tab = this.byId(tabId);
+    if (!tab) return;
+    // Leaves from the end of its group, so the rest stay together.
+    const members = this.tabs.filter((t) => t.group === tab.group);
+    tab.group = null;
+    const last = members.at(-1);
+    if (last && last !== tab) {
+      this.tabs.splice(this.tabs.indexOf(tab), 1);
+      this.tabs.splice(this.tabs.indexOf(last) + 1, 0, tab);
+    }
+    this.keepPinnedFirst();
+    this.changed();
+  }
+
+  renameGroup(groupId, name) {
+    const group = this.groups.find((g) => g.id === groupId);
+    if (!group) return;
+    group.name = String(name ?? '').trim().slice(0, MAX_GROUP_NAME);
+    this.changed();
+  }
+
+  setGroupColor(groupId, color) {
+    const group = this.groups.find((g) => g.id === groupId);
+    if (!group || !GROUP_COLORS.includes(color)) return;
+    group.color = color;
+    this.changed();
+  }
+
+  // Collapsing moves off the active tab first. A group holding every tab stays open.
+  toggleGroupCollapsed(groupId) {
+    const group = this.groups.find((g) => g.id === groupId);
+    if (!group) return;
+    if (!group.collapsed && this.active?.group === groupId) {
+      const index = this.tabs.indexOf(this.active);
+      const outside = this.tabs.slice(index).concat(this.tabs.slice(0, index)).find((t) => t.group !== groupId);
+      if (!outside) return;
+      group.collapsed = true;
+      this.activate(outside.id);
+    } else {
+      group.collapsed = !group.collapsed;
+    }
+    this.changed();
+  }
+
+  ungroup(groupId) {
+    for (const tab of this.tabs) if (tab.group === groupId) tab.group = null;
+    this.keepPinnedFirst();
+    this.changed();
+  }
+
+  closeGroup(groupId) {
+    this.tabs.filter((t) => t.group === groupId).forEach((t) => this.close(t.id));
+  }
+
+  // Dropping a tab onto another puts it there, in the same group as the tab it landed on.
+  dropTab(id, targetId) {
+    const tab = this.byId(id);
+    const target = this.byId(targetId);
+    if (!tab || !target || tab === target) return;
+    if (!tab.tor) tab.group = target.group;
+    this.move(id, this.tabs.indexOf(target));
+  }
+
+  dropOnGroup(id, groupId) {
+    this.addToGroup(id, groupId);
+  }
+
+  groupMenuItems(groupId) {
+    const group = this.groups.find((g) => g.id === groupId);
+    if (!group) return [];
+    return [
+      { label: 'Rename group', click: () => this.emit('rename-group', groupId) },
+      {
+        label: 'Color',
+        submenu: GROUP_COLORS.map((color) => ({
+          label: color[0].toUpperCase() + color.slice(1),
+          type: 'radio',
+          checked: group.color === color,
+          click: () => this.setGroupColor(groupId, color),
+        })),
+      },
+      { label: group.collapsed ? 'Expand group' : 'Collapse group', click: () => this.toggleGroupCollapsed(groupId) },
+      { type: 'separator' },
+      { label: 'Ungroup', click: () => this.ungroup(groupId) },
+      { label: 'Close group', click: () => this.closeGroup(groupId) },
+    ];
+  }
+
+  groupMenu(groupId) {
+    const items = this.groupMenuItems(groupId);
+    if (items.length) Menu.buildFromTemplate(items).popup({ window: this.window });
+  }
+
+  // Puts saved groups back before their tabs are created. Anything malformed is dropped.
+  restoreGroups(saved) {
+    if (!Array.isArray(saved)) return;
+    this.groups = saved
+      .filter((g) => Number.isInteger(g?.id) && g.id > 0)
+      .map((g) => ({
+        id: g.id,
+        name: String(g.name ?? '').slice(0, MAX_GROUP_NAME),
+        color: GROUP_COLORS.includes(g.color) ? g.color : GROUP_COLORS[0],
+        collapsed: Boolean(g.collapsed),
+      }));
+    this.nextGroupId = Math.max(0, ...this.groups.map((g) => g.id)) + 1;
   }
 
   togglePinned(id) {
     const tab = this.byId(id);
     if (!tab) return;
     tab.pinned = !tab.pinned;
+    if (tab.pinned) tab.group = null;
     this.keepPinnedFirst();
     this.changed();
   }
@@ -284,7 +445,7 @@ class Tabs extends EventEmitter {
   duplicate(id) {
     const tab = this.byId(id);
     if (!tab) return;
-    this.create(tab.url, { title: tab.title, tor: tab.tor, index: this.tabs.indexOf(tab) + 1 });
+    this.create(tab.url, { title: tab.title, tor: tab.tor, group: tab.group, index: this.tabs.indexOf(tab) + 1 });
   }
 
   // Pinned tabs are only closed one at a time, on purpose.
@@ -435,7 +596,18 @@ class Tabs extends EventEmitter {
 
   tabMenuItems(tab) {
     const index = this.tabs.indexOf(tab);
+    const otherGroups = this.groups.filter((g) => g.id !== tab.group);
+    const grouping = tab.tor ? [] : [
+      { label: 'Add to new group', click: () => this.newGroup(tab.id) },
+      ...(otherGroups.length ? [{
+        label: 'Add to group',
+        submenu: otherGroups.map((g) => ({ label: g.name || `Unnamed ${g.color} group`, click: () => this.addToGroup(tab.id, g.id) })),
+      }] : []),
+      ...(tab.group ? [{ label: 'Remove from group', click: () => this.removeFromGroup(tab.id) }] : []),
+      { type: 'separator' },
+    ];
     return [
+      ...grouping,
       { label: 'Reload', enabled: Boolean(tab.url), click: () => this.reload(tab.id) },
       { label: 'Duplicate', enabled: Boolean(tab.url), click: () => this.duplicate(tab.id) },
       { label: tab.pinned ? 'Unpin' : 'Pin', click: () => this.togglePinned(tab.id) },
@@ -450,9 +622,11 @@ class Tabs extends EventEmitter {
   }
 
   cycle(step) {
-    if (this.tabs.length < 2) return;
-    const index = this.tabs.findIndex((t) => t.id === this.activeId);
-    this.activate(this.tabs[(index + step + this.tabs.length) % this.tabs.length].id);
+    // Collapsed groups are skipped, unless the active tab is in one.
+    const reachable = this.tabs.filter((t) => t.id === this.activeId || !this.groupOf(t)?.collapsed);
+    if (reachable.length < 2) return;
+    const index = reachable.findIndex((t) => t.id === this.activeId);
+    this.activate(reachable[(index + step + reachable.length) % reachable.length].id);
   }
 
   navigate(id, url) {
@@ -592,7 +766,7 @@ class Tabs extends EventEmitter {
     const isCurrent = () => tab.view?.webContents === wc;
 
     wc.setWindowOpenHandler(({ url, disposition }) => {
-      if (isWebUrl(url)) this.create(url, { activate: disposition !== 'background-tab', openedByPage: true, tor: tab.tor });
+      if (isWebUrl(url)) this.create(url, { activate: disposition !== 'background-tab', openedByPage: true, tor: tab.tor, group: tab.group });
       return { action: 'deny' };
     });
     const followSecurely = (event, url) => {
@@ -785,7 +959,8 @@ class Tabs extends EventEmitter {
     const saved = this.tabs.filter((t) => t.url && !t.tor);
     return {
       activeIndex: Math.max(0, saved.findIndex((t) => t.id === this.activeId)),
-      tabs: saved.map((t) => ({ url: t.url, title: t.title, pinned: t.pinned })),
+      groups: this.groups.filter((g) => saved.some((t) => t.group === g.id)),
+      tabs: saved.map((t) => ({ url: t.url, title: t.title, pinned: t.pinned, group: t.group })),
     };
   }
 

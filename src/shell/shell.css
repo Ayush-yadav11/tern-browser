@@ -9,6 +9,7 @@ body[data-theme="paper"]    { --bg:#f6f4ef; --bar-bg:#ebe8e0; --raised:#ffffff; 
 body[data-theme="lagoon"]   { --bg:#0e2329; --bar-bg:#0c1e23; --raised:#173239; --hover:#1e3e46; --line:#21424a; --text:#dff1f1; --muted:#8db0b3; --theme-accent:#3ed6c4; --on-accent:#06201d; color-scheme:dark; }
 body[data-theme="moss"]     { --bg:#1a1e16; --bar-bg:#171a13; --raised:#272c20; --hover:#313729; --line:#343a2b; --text:#e9ecdf; --muted:#a0a78f; --theme-accent:#b5d15a; --on-accent:#1b2008; color-scheme:dark; }
 body[data-theme="ember"]    { --bg:#1e1513; --bar-bg:#1a1210; --raised:#2e201c; --hover:#3a2924; --line:#3e2c26; --text:#f3e7e2; --muted:#b39c93; --theme-accent:#ff8a5c; --on-accent:#2a0f05; color-scheme:dark; }
+body { --group-blue: #4c8df6; --group-red: #e5534b; --group-yellow: #d9a514; --group-green: #3fa45b; --group-pink: #e0559b; --group-purple: #9a6bff; --group-teal: #17a8a0; --group-grey: #8a8f98; }
 body.compact { --bar: 32px; }
 
 * { box-sizing: border-box; }
@@ -343,3 +344,21 @@ body[data-tabs="top"] .tab.pinned .tab-title { display: none; }
 #bookmark-tools-status { margin: 6px 0 0; }
 #bookmark-tools-status:empty { display: none; }
 .folder-chip svg { width: 14px; height: 14px; color: var(--muted); }
+
+/* Tab groups */
+.tab-group {
+  -webkit-app-region: no-drag; flex: none; display: flex; align-items: center; gap: 6px; height: calc(var(--bar) - 12px);
+  max-width: 150px; padding: 0 8px; border-radius: var(--radius); font-size: 12px; font-weight: 600; color: #fff; background: var(--group-color);
+}
+.tab-group:empty { min-width: 18px; }
+.tab-group .group-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tab-group.nameless { min-width: 18px; padding: 0; }
+.tab-group.collapsed { opacity: .85; }
+.tab-group.drop-target { outline: 2px solid var(--text); outline-offset: 1px; }
+.tab-group input { width: 110px; height: 18px; padding: 0 4px; font: inherit; color: var(--text); background: var(--bar-bg); border: 0; border-radius: 3px; outline: 0; user-select: text; }
+.tab.in-group { box-shadow: inset 0 -2px 0 var(--group-color); }
+.tab.group-hidden { display: none; }
+body:not([data-tabs="top"]) .tab-group { max-width: none; height: 22px; margin-top: 4px; }
+body:not([data-tabs="top"]) .tab.in-group { box-shadow: inset 2px 0 0 var(--group-color); }
+body[data-side="auto"]:not(.side-open) .tab-group { justify-content: center; padding: 0; height: 10px; min-width: 0; }
+body[data-side="auto"]:not(.side-open) .tab-group .group-name { display: none; }

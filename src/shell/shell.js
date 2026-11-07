@@ -51,6 +51,8 @@ let editingFolder = null;
 const closedFolders = new Set();
 let freshDownload = false;
 const tabEls = new Map();
+const groupEls = new Map();
+let renamingGroup = null;
 const customStyle = document.createElement('style');
 document.head.append(customStyle);
 
@@ -354,22 +356,117 @@ function makeTab(tab) {
   el.addEventListener('drop', (e) => {
     e.preventDefault();
     const id = Number(e.dataTransfer.getData('text/tern-tab'));
-    if (id && id !== tab.id) api.move(id, state.tabs.findIndex((t) => t.id === tab.id));
+    if (id && id !== tab.id) api.dropTab(id, tab.id);
   });
   return el;
+}
+
+function makeGroup(id) {
+  const el = make('div', 'tab-group');
+  el.setAttribute('role', 'button');
+  el.tabIndex = 0;
+  el.addEventListener('click', (e) => {
+    if (!e.target.closest('input')) api.toggleGroup(id);
+  });
+  el.addEventListener('keydown', (e) => {
+    if ((e.key === 'Enter' || e.key === ' ') && !e.target.closest('input')) {
+      e.preventDefault();
+      api.toggleGroup(id);
+    }
+  });
+  el.addEventListener('dblclick', (e) => {
+    if (e.target.closest('input')) return;
+    startRenamingGroup(id);
+  });
+  el.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    api.groupMenu(id);
+  });
+  el.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    el.classList.add('drop-target');
+  });
+  el.addEventListener('dragleave', () => el.classList.remove('drop-target'));
+  el.addEventListener('drop', (e) => {
+    e.preventDefault();
+    el.classList.remove('drop-target');
+    const tab = Number(e.dataTransfer.getData('text/tern-tab'));
+    if (tab) api.dropOnGroup(tab, id);
+  });
+  return el;
+}
+
+function renderGroup(group, count) {
+  let el = groupEls.get(group.id);
+  if (!el) {
+    el = makeGroup(group.id);
+    groupEls.set(group.id, el);
+  }
+  el.style.setProperty('--group-color', `var(--group-${group.color})`);
+  el.classList.toggle('collapsed', group.collapsed);
+  const label = group.name || (group.collapsed ? String(count) : '');
+  el.classList.toggle('nameless', !label && renamingGroup !== group.id);
+  el.title = `${group.name || 'Unnamed group'}: ${count} ${count === 1 ? 'tab' : 'tabs'}. Click to ${group.collapsed ? 'expand' : 'collapse'}, right-click for more.`;
+  el.setAttribute('aria-expanded', String(!group.collapsed));
+  el.setAttribute('aria-label', el.title);
+  if (renamingGroup === group.id) {
+    if (!el.querySelector('input')) {
+      el.textContent = '';
+      const input = make('input');
+      input.value = group.name;
+      input.placeholder = 'Name this group';
+      input.setAttribute('aria-label', 'Group name');
+      const finish = () => {
+        if (renamingGroup !== group.id) return;
+        renamingGroup = null;
+        api.renameGroup(group.id, input.value);
+      };
+      input.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') finish();
+        if (e.key === 'Escape') {
+          input.value = group.name;
+          finish();
+        }
+      });
+      input.addEventListener('blur', finish);
+      el.append(input);
+      input.focus();
+      input.select();
+    }
+  } else {
+    el.textContent = '';
+    if (label) el.append(make('span', 'group-name', group.collapsed && group.name ? `${group.name} (${count})` : label));
+  }
+  return el;
+}
+
+function startRenamingGroup(id) {
+  renamingGroup = id;
+  if (state) renderTabs();
 }
 
 function renderTabs() {
   const list = $('tablist');
   const seen = new Set();
-  state.tabs.forEach((tab, index) => {
+  const seenGroups = new Set();
+  const wanted = [];
+  state.tabs.forEach((tab) => {
     seen.add(tab.id);
+    const group = state.groups.find((g) => g.id === tab.group);
+    if (group && !seenGroups.has(group.id)) {
+      seenGroups.add(group.id);
+      wanted.push(renderGroup(group, state.tabs.filter((t) => t.group === group.id).length));
+    }
     let el = tabEls.get(tab.id);
     if (!el) {
       el = makeTab(tab);
       tabEls.set(tab.id, el);
     }
-    if (list.children[index] !== el) list.insertBefore(el, list.children[index] ?? null);
+    wanted.push(el);
+    el.classList.toggle('in-group', Boolean(group));
+    el.classList.toggle('group-hidden', Boolean(group?.collapsed) && tab.id !== state.activeId);
+    if (group) el.style.setProperty('--group-color', `var(--group-${group.color})`);
     el.classList.toggle('active', tab.id === state.activeId);
     el.classList.toggle('loading', tab.loading);
     el.classList.toggle('sleeping', tab.sleeping);
@@ -410,6 +507,15 @@ function renderTabs() {
       tabEls.delete(id);
     }
   }
+  for (const [id, el] of groupEls) {
+    if (!seenGroups.has(id)) {
+      el.remove();
+      groupEls.delete(id);
+    }
+  }
+  wanted.forEach((el, index) => {
+    if (list.children[index] !== el) list.insertBefore(el, list.children[index] ?? null);
+  });
 }
 
 /* What shows in the content area when no page view covers it */
@@ -1319,6 +1425,7 @@ const PALETTE_ACTIONS = [
   ['Reopen closed tab', () => api.runAction('reopen')],
   ['Duplicate tab', () => api.runAction('duplicate')],
   ['Pin or unpin tab', () => api.runAction('pin')],
+  ['New group with this tab', () => api.newGroup(state.activeId)],
   ['Mute or unmute tab', () => api.runAction('mute')],
   ['Close other tabs', () => api.runAction('closeOthers')],
   ['Close tab', () => api.close(state.activeId)],
@@ -1565,6 +1672,7 @@ api.onSuggestPicked((index) => {
   go(item.value);
   if (input?.id === 'newtab-input') input.value = '';
 });
+api.onGroupRenameStart(startRenamingGroup);
 api.onBookmarks((next) => {
   bookmarks = next;
   bookmarkedUrls = new Set(next.map((b) => b.url));

@@ -781,6 +781,99 @@ async function main() {
     assert.equal(tab.readerView, null);
   });
 
+  await check('tab groups: new tabs join, members stay together, and pinning leaves the group', async () => {
+    const a = tabs.create(`${base}/ga`, { activate: false });
+    const c = tabs.create(`${base}/gc`, { activate: false });
+    const d = tabs.create(`${base}/gd`, { activate: false });
+    const group = tabs.newGroup(a.id);
+    assert.equal(a.group, group.id);
+    tabs.addToGroup(d.id, group.id);
+    const order = () => tabs.tabs.map((t) => t.id);
+    assert.equal(order().indexOf(d.id), order().indexOf(a.id) + 1, 'members sit side by side');
+    tabs.duplicate(a.id);
+    const copy = tabs.tabs[order().indexOf(a.id) + 1];
+    assert.equal(copy.group, group.id, 'a duplicate joins too');
+    tabs.close(copy.id);
+    tabs.togglePinned(d.id);
+    assert.equal(d.group, null, 'pinning leaves the group');
+    tabs.togglePinned(d.id);
+    tabs.addToGroup(d.id, group.id);
+    tabs.removeFromGroup(a.id);
+    assert.equal(a.group, null);
+    assert.ok(tabs.groups.some((g) => g.id === group.id), 'still has a member');
+    tabs.removeFromGroup(d.id);
+    assert.equal(tabs.groups.length, 0, 'an empty group goes away');
+    [a, c, d].forEach((t) => tabs.close(t.id));
+    tabs.activate(tab.id);
+  });
+
+  await check('tab groups: collapsing moves off the active tab and hides members, and switching back expands', async () => {
+    const a = tabs.create(`${base}/ga`);
+    await sleep(100);
+    const group = tabs.newGroup(a.id);
+    tabs.toggleGroupCollapsed(group.id);
+    assert.equal(group.collapsed, true);
+    assert.notEqual(tabs.activeId, a.id, 'moved to another tab');
+    await sleep(100);
+    assert.equal(await shellEval(`document.querySelector('.tab.group-hidden') !== null`), true);
+    tabs.cycle(1);
+    assert.notEqual(tabs.activeId, a.id, 'next-tab skips collapsed groups');
+    tabs.activate(a.id);
+    assert.equal(group.collapsed, false, 'opening a member expands it');
+    tabs.close(a.id);
+    tabs.activate(tab.id);
+    const only = tabs.tabs.length === 1;
+    assert.equal(only, true);
+    const solo = tabs.newGroup(tab.id);
+    tabs.toggleGroupCollapsed(solo.id);
+    assert.equal(solo.collapsed, false, 'a group holding every tab stays open');
+    tabs.ungroup(solo.id);
+  });
+
+  await check('tab groups: name, color and menus work from the tab bar, with names kept as plain text', async () => {
+    const a = tabs.create(`${base}/ga`, { activate: false });
+    const c = tabs.create(`${base}/gc`, { activate: false });
+    const group = tabs.newGroup(a.id);
+    tabs.addToGroup(c.id, group.id);
+    await waitFor(() => inShell(() => document.querySelector('.tab-group input')), 2000);
+    await inShell(() => {
+      const input = document.querySelector('.tab-group input');
+      input.value = 'Work <b>stuff</b>';
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    });
+    await waitFor(() => group.name === 'Work <b>stuff</b>', 2000);
+    await waitFor(() => inShell(() => document.querySelector('.tab-group .group-name')?.textContent === 'Work <b>stuff</b>'), 2000);
+    assert.equal(await inShell(() => document.querySelector('.tab-group b')), null);
+    tabs.setGroupColor(group.id, 'green');
+    tabs.setGroupColor(group.id, 'not-a-color');
+    assert.equal(group.color, 'green');
+    await shot(shell, '34-tab-groups');
+    await inShell(() => document.querySelector('.tab-group').click());
+    await waitFor(() => group.collapsed, 2000);
+    await inShell(() => document.querySelector('.tab-group').click());
+    await waitFor(() => !group.collapsed, 2000);
+    const labels = (items) => items.map((i) => i.label).filter(Boolean);
+    assert.deepEqual(labels(tabs.groupMenuItems(group.id)), ['Rename group', 'Color', 'Collapse group', 'Ungroup', 'Close group']);
+    assert.ok(labels(tabs.tabMenuItems(tab)).includes('Add to group'));
+    assert.ok(labels(tabs.tabMenuItems(a)).includes('Remove from group'));
+    tabs.dropTab(tab.id, a.id);
+    assert.equal(tab.group, group.id, 'dropping onto a member joins');
+    tab.group = null;
+    tabs.keepPinnedFirst();
+    const saved = tabs.serialize();
+    assert.equal(saved.groups[0].name, 'Work <b>stuff</b>');
+    assert.equal(saved.tabs.filter((t) => t.group === group.id).length, 2);
+    tabs.closeGroup(group.id);
+    assert.equal(tabs.groups.length, 0);
+    tabs.activate(tab.id);
+    tabs.restoreGroups([{ id: 5, name: 'ok', color: 'purple' }, { id: 'x' }, { id: 6, color: 'nope', name: 7 }]);
+    assert.deepEqual(tabs.groups.map((g) => [g.id, g.color]), [[5, 'purple'], [6, 'blue']], 'damaged saved groups are cleaned');
+    assert.equal(tabs.nextGroupId, 7);
+    tabs.keepPinnedFirst();
+    assert.equal(tabs.groups.length, 0);
+    await sleep(100);
+  });
+
   await check('tabs: pin keeps a tab first, and duplicate, close others and close right work', async () => {
     const a = tabs.create(`${base}/a`, { activate: false });
     const c = tabs.create(`${base}/c`, { activate: false });
@@ -1031,6 +1124,12 @@ async function main() {
     await sleep(600);
     assert.ok(socks.seen.some((s) => s.host === 'reader-image.invalid'), 'the image went through Tor');
     tabs.closeReader(torTab);
+  });
+
+  await check('Tor tab: stays out of groups', async () => {
+    assert.equal(tabs.newGroup(torTab.id), null);
+    assert.equal(torTab.group, null);
+    assert.ok(!tabs.tabMenuItems(torTab).some((i) => i.label === 'Add to new group'));
   });
 
   await check('Tor tab: zoom is not saved', async () => {

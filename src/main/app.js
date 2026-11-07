@@ -479,6 +479,7 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     saveSession();
   });
   tabs.on('fullscreen', pushState);
+  tabs.on('rename-group', (id) => send('tern:group-rename-start', id));
   tabs.on('found', (result) => send('tern:found', {
     active: result.activeMatchOrdinal,
     total: result.matches,
@@ -576,6 +577,12 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     },
     'tern:tab-menu': (id) => tabs.tabMenu(id),
     'tern:toggle-muted': (id) => tabs.toggleMuted(id),
+    'tern:drop-tab': (id, targetId) => tabs.dropTab(id, targetId),
+    'tern:drop-on-group': (id, groupId) => tabs.dropOnGroup(id, groupId),
+    'tern:new-group': (id) => tabs.newGroup(id),
+    'tern:group-rename': (id, name) => tabs.renameGroup(id, name),
+    'tern:group-toggle': (id) => tabs.toggleGroupCollapsed(id),
+    'tern:group-menu': (id) => tabs.groupMenu(id),
     'tern:bookmark-set-folder': (id, folder) => library.setBookmarkFolder(id, folder),
     'tern:folder-rename': (from, to) => library.renameFolder(from, to),
     'tern:folder-remove': (name) => library.removeFolder(name),
@@ -866,7 +873,14 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
   const previous = sessionFile.read();
   const restored = Array.isArray(previous?.tabs) ? previous.tabs.filter((t) => isWebUrl(t?.url)) : [];
   if (restored.length) {
-    restored.forEach((t) => tabs.create(t.url, { activate: false, title: String(t.title ?? ''), pinned: Boolean(t.pinned) }));
+    tabs.restoreGroups(previous.groups);
+    const groupIds = new Set(tabs.groups.map((g) => g.id));
+    restored.forEach((t) => tabs.create(t.url, {
+      activate: false,
+      title: String(t.title ?? ''),
+      pinned: Boolean(t.pinned),
+      group: groupIds.has(t.group) ? t.group : null,
+    }));
     tabs.activate(tabs.tabs[Math.min(previous.activeIndex ?? 0, restored.length - 1)]?.id ?? tabs.tabs[0].id);
   }
   if (openUrl) tabs.create(openUrl);

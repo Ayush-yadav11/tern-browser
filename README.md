@@ -9,6 +9,11 @@ Download `Tern-Setup-x.y.z.exe` from the [latest release](https://github.com/Ayu
 and run it. It installs for your Windows account only, without needing admin rights. Because the
 installer isn't code-signed yet, Windows SmartScreen may warn you: choose **More info**, then **Run anyway**.
 
+## Tab groups
+
+Right-click a tab and choose Add to new group. Click a group's label to collapse it, double-click to rename it, and
+right-click for colors and more. Groups come back next time you open Tern. Tor tabs stay out of them.
+
 ## Bookmarks
 
 Bookmarks can sit in folders, and the bookmarks bar shows each folder as a menu. Under Bookmarks in the library panel,
