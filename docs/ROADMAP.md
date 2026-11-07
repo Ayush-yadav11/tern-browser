@@ -13,7 +13,7 @@ reuse their code, names or artwork. Tern stays light, and has no AI features.
 2. [x] HTTPS-only mode (LibreWolf, Tor Browser)
 3. [x] Remove tracking parameters from links, and send Global Privacy Control (Brave, LibreWolf)
 4. [x] Search shortcuts such as `!w` and `!yt` in the address bar (Helium, DuckDuckGo)
-5. [ ] Remember zoom per site, and per-site settings in one place (most browsers)
+5. [x] Remember zoom per site, and per-site settings in one place (most browsers)
 6. [ ] Reader view (Min, Firefox)
 7. [ ] Bookmark folders, and import from other browsers (most browsers)
 8. [ ] Tab groups or workspaces (Min's tasks, Zen)

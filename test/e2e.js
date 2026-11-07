@@ -277,7 +277,7 @@ async function main() {
   });
 
   await check('no AI: the browser UI has no AI wording', async () => {
-    for (const panel of ['customize', 'shield', 'library', 'downloads']) {
+    for (const panel of ['customize', 'shield', 'site', 'library', 'downloads']) {
       await shellEval(`openPanel = '${panel}'; renderPanel();`);
       // The search engine list is left out because "DuckDuckGo (no AI)" names the absence of it.
       const text = await shellEval(`(() => {
@@ -630,6 +630,67 @@ async function main() {
     await shellEval('togglePanel(openPanel)');
   });
 
+  await check('site zoom: remembered per site, shown in the address bar, and reset removes it', async () => {
+    const local = `http://127.0.0.1:${server.address().port}`;
+    await load(`${base}/ads?zoom=1`);
+    tabs.zoom(1);
+    assert.equal(b.getSettings().siteZoom[TEST_HOST], 1);
+    await waitFor(() => inShell(() => !document.getElementById('zoom-pill').hidden), 2000);
+    assert.equal(await inShell(() => document.getElementById('zoom-pill').textContent), '120%');
+    await load(`${local}/ads?other-site=1`);
+    assert.equal(wc().getZoomLevel(), 0, 'a different site is not affected');
+    await waitFor(() => inShell(() => document.getElementById('zoom-pill').hidden), 2000);
+    await load(`${base}/ads?zoom=2`);
+    assert.equal(wc().getZoomLevel(), 1, 'coming back restores it');
+    assert.equal(clean({ siteZoom: b.getSettings().siteZoom }).siteZoom[TEST_HOST], 1, 'survives saving');
+    tabs.zoom(0);
+    assert.equal(b.getSettings().siteZoom[TEST_HOST], undefined);
+    const bad = clean({ siteZoom: { 'a.example': 99, 'b.example': 'x', 'c.example': 0, 'd.example': 2 } }).siteZoom;
+    assert.deepEqual(bad, { 'd.example': 2 }, 'bad values in the file are dropped');
+  });
+
+  await check('This site panel: opens from the padlock and controls zoom and the ad blocker', async () => {
+    await load(`${base}/ads?panel=1`);
+    await waitFor(() => inShell(() => !document.getElementById('secure').hidden), 2000);
+    await inShell(() => document.getElementById('secure').click());
+    await waitFor(() => inShell(() => !document.getElementById('panel-site').hidden && document.getElementById('site-host').textContent.length > 0), 2000);
+    assert.equal(await inShell(() => document.getElementById('site-host').textContent), TEST_HOST);
+    await waitFor(() => inShell(() => document.getElementById('site-adblock').checked), 2000);
+    await shot(shell, '28-site-panel');
+    await inShell(() => document.getElementById('site-zoom-in').click());
+    await waitFor(() => b.getSettings().siteZoom[TEST_HOST] === 0.5, 2000);
+    await waitFor(() => inShell(() => document.getElementById('site-zoom-reset').textContent !== '100%'), 2000);
+    await waitFor(() => inShell(() => document.querySelector('#site-list .entry-title')?.textContent.includes('fixture')), 2000);
+    await inShell(() => document.getElementById('site-adblock').click());
+    await waitFor(() => b.getSettings().allowedSites.includes(TEST_HOST), 2000);
+    await waitFor(() => inShell(() => document.querySelector('#site-list .entry-sub')?.textContent.includes('Ad blocker off')), 3000);
+    await waitFor(() => !tab.loading, 3000);
+    await inShell(() => document.querySelector('#site-list .icon').click());
+    await waitFor(() => !b.getSettings().allowedSites.includes(TEST_HOST) && !b.getSettings().siteZoom[TEST_HOST], 2000);
+    assert.equal(wc().getZoomLevel(), 0, 'reset applies straight away');
+    await waitFor(() => inShell(() => !document.getElementById('site-list-empty').hidden), 2000);
+  });
+
+  await check('This site panel: lists permissions, and clears only this site\'s cookies', async () => {
+    await load(`${base}/ads?perm=1`);
+    await wc().executeJavaScript("document.cookie = 'mine=1; max-age=999'; 0");
+    await b.tabSession.cookies.set({ url: 'http://other-site.example/', name: 'theirs', value: '1', expirationDate: Date.now() / 1000 + 999 });
+    await b.setPermissionChoiceForTest(`${base}`, 'geolocation', true);
+    await shellEval('renderSite(true)');
+    await waitFor(() => inShell(() => document.querySelector('#site-permissions .entry-title')?.textContent === 'Location'), 2000);
+    await inShell(() => document.querySelector('#site-permissions .icon').click());
+    await waitFor(() => inShell(() => document.querySelectorAll('#site-permissions li').length === 0), 2000);
+    await inShell(() => document.getElementById('site-clear').click());
+    await sleep(200);
+    assert.equal((await b.tabSession.cookies.get({ name: 'mine' })).length, 1, 'first click only asks');
+    await inShell(() => document.getElementById('site-clear').click());
+    await waitFor(async () => (await b.tabSession.cookies.get({ name: 'mine' })).length === 0, 3000);
+    assert.equal((await b.tabSession.cookies.get({ name: 'theirs' })).length, 1, 'other sites keep theirs');
+    await b.tabSession.cookies.remove('http://other-site.example/', 'theirs');
+    await waitFor(() => !tab.loading, 3000);
+    await shellEval('togglePanel(openPanel)');
+  });
+
   await check('tabs: pin keeps a tab first, and duplicate, close others and close right work', async () => {
     const a = tabs.create(`${base}/a`, { activate: false });
     const c = tabs.create(`${base}/c`, { activate: false });
@@ -870,6 +931,15 @@ async function main() {
     await waitFor(() => torTab.error, 8000);
     assert.ok(!directHits.includes('/tor-is-down'), 'nothing reached the site');
     await b.useTorPort(socks.port);
+  });
+
+  await check('Tor tab: zoom is not saved', async () => {
+    const before = JSON.stringify(b.getSettings().siteZoom);
+    tabs.activate(torTab.id);
+    tabs.zoom(1);
+    assert.equal(JSON.stringify(b.getSettings().siteZoom), before);
+    tabs.zoom(0);
+    tabs.activate(tab.id);
   });
 
   await check('Tor tab: closing the last one wipes its cookies and stops Tor', async () => {

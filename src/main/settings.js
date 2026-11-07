@@ -6,6 +6,7 @@ const { SEARCH_ENGINES } = require('./url');
 
 const THEMES = ['midnight', 'paper', 'lagoon', 'moss', 'ember'];
 const PROXY_SERVER = /^(?:socks5|socks4|http|https):\/\/[^\s/:@]+:\d{1,5}$/i;
+const MAX_SITE_ZOOM = 500;
 const TOOLBAR_IDS = ['back', 'forward', 'reload', 'home', 'url', 'star', 'shield', 'library', 'downloads', 'customize', 'menu'];
 const LOCKED_ITEMS = new Set(['url', 'customize', 'menu']);
 const HIDDEN_BY_DEFAULT = new Set(['home']);
@@ -22,6 +23,7 @@ const DEFAULTS = {
   autoUpdate: true,
   sideCollapse: true,
   httpsOnly: true,
+  siteZoom: {},
   stripTracking: true,
   globalPrivacyControl: true,
   proxyEnabled: false,
@@ -57,6 +59,11 @@ function clean(input, base = DEFAULTS) {
   if ('autoUpdate' in input) s.autoUpdate = Boolean(input.autoUpdate);
   if ('sideCollapse' in input) s.sideCollapse = Boolean(input.sideCollapse);
   if ('httpsOnly' in input) s.httpsOnly = Boolean(input.httpsOnly);
+  if (input.siteZoom && typeof input.siteZoom === 'object') {
+    s.siteZoom = Object.fromEntries(Object.entries(input.siteZoom)
+      .filter(([host, level]) => host.length < 254 && Number.isFinite(level) && level !== 0 && Math.abs(level) <= 8)
+      .slice(-MAX_SITE_ZOOM));
+  }
   if ('stripTracking' in input) s.stripTracking = Boolean(input.stripTracking);
   if ('globalPrivacyControl' in input) s.globalPrivacyControl = Boolean(input.globalPrivacyControl);
   // An unusable server stays switched on and just fails to connect, which never exposes the real IP.

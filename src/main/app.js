@@ -63,6 +63,7 @@ function configureTabSession(ses, getWindow, { canAsk = true } = {}) {
     grants.set(key, response === 1);
     return callback(response === 1);
   });
+  return grants;
 }
 
 // Everything that lives for one running browser. Tests call this directly with a temp profile.
@@ -114,7 +115,7 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
   };
 
   const tabSession = session.fromPartition('persist:tern');
-  configureTabSession(tabSession, () => win);
+  const permissionChoices = configureTabSession(tabSession, () => win);
   // Kept in memory only, and pointed nowhere before anything can load in it.
   const torSession = session.fromPartition('tern-tor');
   await torSession.setProxy(NOWHERE);
@@ -235,6 +236,7 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     getWebRtcPolicy: () => (settings.proxyEnabled ? 'disable_non_proxied_udp' : 'default_public_interface_only'),
     getHttpsOnly: () => settings.httpsOnly,
     getStripTracking: () => settings.stripTracking,
+    getSiteZoom: (host) => settings.siteZoom[host] ?? 0,
     getSearchUrl: (text) => SEARCH_ENGINES[settings.searchEngine].url + encodeURIComponent(text),
   });
 
@@ -314,6 +316,11 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     callback(settings.proxyUsername, password);
   };
   app.on('login', onLogin);
+
+  tabs.on('site-zoom', (host, level) => {
+    const { [host]: _old, ...others } = settings.siteZoom;
+    update({ siteZoom: level === 0 ? others : { ...others, [host]: level } });
+  });
 
   const library = new Library(profile);
   const pushBookmarks = () => send('tern:bookmarks', library.bookmarks);
@@ -548,6 +555,50 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     },
     'tern:tab-menu': (id) => tabs.tabMenu(id),
     'tern:toggle-muted': (id) => tabs.toggleMuted(id),
+    // Everything the This site panel shows. Nothing here is written anywhere for Tor tabs.
+    'tern:site-info': () => {
+      const tab = tabs.active;
+      const url = tab?.url ?? '';
+      const host = hostOf(url);
+      const origin = isWebUrl(url) ? new URL(url).origin : '';
+      const permissions = tab?.tor ? [] : [...permissionChoices.entries()]
+        .filter(([key]) => key.startsWith(`${origin}|`))
+        .map(([key, allowed]) => ({ name: key.slice(origin.length + 1), allowed }));
+      const hosts = new Set([...Object.keys(settings.siteZoom), ...settings.allowedSites]);
+      return {
+        host,
+        tor: Boolean(tab?.tor),
+        secure: url.startsWith('https:'),
+        blocked: tab?.blocked ?? 0,
+        adblock: adblock.enabled && !adblock.isSiteAllowed(host),
+        adblockAvailable: adblock.enabled,
+        zoom: tabs.zoomPercent(),
+        permissions,
+        customSites: [...hosts].sort().map((name) => ({
+          host: name,
+          zoom: settings.siteZoom[name] ? Math.round(1.2 ** settings.siteZoom[name] * 100) : 0,
+          adblockOff: settings.allowedSites.includes(name),
+        })),
+      };
+    },
+    'tern:site-forget-permission': (name) => {
+      const url = tabs.active?.url ?? '';
+      if (isWebUrl(url)) permissionChoices.delete(`${new URL(url).origin}|${name}`);
+    },
+    'tern:site-clear-data': async () => {
+      const tab = tabs.active;
+      if (!tab || !isWebUrl(tab.url)) return;
+      await (tab.tor ? torSession : tabSession).clearStorageData({ origin: new URL(tab.url).origin });
+      tabs.reload(tab.id);
+    },
+    'tern:site-forget': (host) => {
+      const { [host]: _old, ...others } = settings.siteZoom;
+      update({ siteZoom: others, allowedSites: settings.allowedSites.filter((h) => h !== host) });
+      for (const tab of tabs.tabs) {
+        if (tab.view && !tab.tor && hostOf(tab.url) === host) tab.view.webContents.setZoomLevel(0);
+      }
+      tabs.changed();
+    },
     'tern:allow-http': (id) => tabs.allowHttp(id),
     // Clears normal tabs only. Bookmarks, settings and Tor tabs aren't touched.
     'tern:clear-browsing-data': async () => {
@@ -646,12 +697,12 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
       }
     },
     'tern:settings': (patch) => {
-      const { totalBlocked, allowedSites, proxyEnabled, proxyServer, proxyUsername, proxyPassword, ...safe } = patch ?? {};
+      const { totalBlocked, allowedSites, siteZoom, proxyEnabled, proxyServer, proxyUsername, proxyPassword, ...safe } = patch ?? {};
       update(safe);
     },
     'tern:reset-settings': () => {
-      const { adblock: on, allowedSites, totalBlocked, saveHistory, askDownloadPath, autoUpdate, proxyEnabled, proxyServer, proxyUsername, proxyPassword } = settings;
-      settings = clean({ adblock: on, allowedSites, totalBlocked, saveHistory, askDownloadPath, autoUpdate, proxyEnabled, proxyServer, proxyUsername, proxyPassword }, DEFAULTS);
+      const { adblock: on, allowedSites, totalBlocked, siteZoom, saveHistory, askDownloadPath, autoUpdate, httpsOnly, stripTracking, globalPrivacyControl, proxyEnabled, proxyServer, proxyUsername, proxyPassword } = settings;
+      settings = clean({ adblock: on, allowedSites, totalBlocked, siteZoom, saveHistory, askDownloadPath, autoUpdate, httpsOnly, stripTracking, globalPrivacyControl, proxyEnabled, proxyServer, proxyUsername, proxyPassword }, DEFAULTS);
       settingsFile.write(settings);
       pushState();
     },
@@ -776,6 +827,7 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     downloads,
     updater,
     mainMenuItems,
+    setPermissionChoiceForTest: (origin, name, allowed) => permissionChoices.set(`${origin}|${name}`, allowed),
     tor,
     torSession,
     useTorPort,

@@ -72,12 +72,14 @@ function buildToolbar(items) {
       const form = document.createElement('form');
       form.id = 'address';
       form.className = 'no-drag';
-      form.innerHTML = '<span id="secure" hidden></span><input id="address-input" placeholder="Search or enter address" aria-label="Address and search" spellcheck="false" autocomplete="off">';
+      form.innerHTML = '<button id="secure" type="button" hidden></button><input id="address-input" placeholder="Search or enter address" aria-label="Address and search" spellcheck="false" autocomplete="off"><button id="zoom-pill" type="button" hidden></button>';
       form.addEventListener('submit', (e) => {
         e.preventDefault();
         go($('address-input').value);
       });
       const input = form.querySelector('input');
+      form.querySelector('#secure').addEventListener('click', () => togglePanel('site'));
+      form.querySelector('#zoom-pill').addEventListener('click', () => togglePanel('site'));
       input.addEventListener('focus', () => input.select());
       // Clicking the page without pressing Enter puts the real address back.
       input.addEventListener('blur', () => setTimeout(renderToolbar, 200));
@@ -147,8 +149,14 @@ function renderToolbar() {
       el.dataset.mark = mark;
       el.className = mark;
       el.innerHTML = svg(mark);
-      el.title = isHttps ? 'Connection is encrypted' : "Not secure: this site's connection isn't encrypted";
+      el.title = isHttps ? 'Connection is encrypted. Click for this site\'s settings.' : "Not secure: this site's connection isn't encrypted. Click for this site's settings.";
+      el.setAttribute('aria-label', el.title);
     }
+  });
+  set2('zoom-pill', (el) => {
+    el.hidden = tab.zoom === 100;
+    el.textContent = `${tab.zoom}%`;
+    el.title = 'Zoom for this site. Click to change it.';
   });
   const set = (id, fn) => {
     const el = $(id);
@@ -473,6 +481,7 @@ function renderPanel() {
   $('panel-shield').hidden = openPanel !== 'shield';
   $('panel-customize').hidden = openPanel !== 'customize';
   $('panel-library').hidden = openPanel !== 'library';
+  $('panel-site').hidden = openPanel !== 'site';
   $('panel-downloads').hidden = openPanel !== 'downloads';
   if (openPanel === 'shield') {
     $('panel-title').textContent = 'Ad blocker';
@@ -481,6 +490,10 @@ function renderPanel() {
   if (openPanel === 'customize') {
     $('panel-title').textContent = 'Customize';
     renderCustomize();
+  }
+  if (openPanel === 'site') {
+    $('panel-title').textContent = 'This site';
+    renderSite();
   }
   if (openPanel === 'library') {
     $('panel-title').textContent = libraryTab === 'history' ? 'History' : 'Bookmarks';
@@ -747,6 +760,61 @@ function renderDownloads() {
   $('downloads-clear').hidden = !downloads.some((d) => d.state !== 'progressing');
 }
 
+const PERMISSION_NAMES = {
+  notifications: 'Notifications',
+  media: 'Camera and microphone',
+  geolocation: 'Location',
+  'clipboard-read': 'Read clipboard',
+  midi: 'MIDI devices',
+  midiSysex: 'MIDI devices',
+};
+
+// Asks the main process only when something it reports could have changed.
+let siteKey = '';
+async function renderSite(force = false) {
+  const tab = activeTab();
+  const key = JSON.stringify([tab?.id, tab?.url, tab?.zoom, tab?.blocked, state.settings.allowedSites, state.settings.siteZoom, state.shield.enabled]);
+  if (key === siteKey && !force) return;
+  siteKey = key;
+  const info = await api.siteInfo();
+  if (openPanel !== 'site') return;
+  const hasSite = Boolean(info.host);
+  $('site-host').textContent = info.host || 'No site open';
+  let security = hasSite ? (info.secure ? 'Your connection to this site is encrypted.' : 'This site is not encrypted, so your network could see or change it.') : '';
+  if (info.tor) security += ' Tor tab: nothing here is saved.';
+  $('site-security').textContent = security;
+  $('site-adblock').checked = info.adblock;
+  $('site-adblock').disabled = !hasSite || !info.adblockAvailable;
+  $('site-blocked').textContent = hasSite && info.blocked ? `${info.blocked} blocked` : '';
+  $('site-zoom-reset').textContent = `${info.zoom}%`;
+  for (const id of ['site-zoom-in', 'site-zoom-out', 'site-zoom-reset']) $(id).disabled = !tab?.url || tab.sleeping;
+  $('site-clear').hidden = !hasSite;
+  $('site-permissions-title').hidden = info.permissions.length === 0;
+  const permissions = $('site-permissions');
+  permissions.textContent = '';
+  for (const { name, allowed } of info.permissions) {
+    const row = make('li', 'site-row');
+    const main = make('div', 'entry-main');
+    main.append(make('span', 'entry-title', PERMISSION_NAMES[name] ?? name), make('span', 'entry-sub', allowed ? 'Allowed until Tern closes' : 'Blocked until Tern closes'));
+    row.append(main, iconButton('close', 'Ask again next time', async () => {
+      await api.forgetPermission(name);
+      renderSite(true);
+    }));
+    permissions.append(row);
+  }
+  const list = $('site-list');
+  list.textContent = '';
+  $('site-list-empty').hidden = info.customSites.length > 0;
+  for (const site of info.customSites) {
+    const row = make('li', 'site-row');
+    const main = make('div', 'entry-main');
+    const notes = [site.zoom ? `Zoom ${site.zoom}%` : '', site.adblockOff ? 'Ad blocker off' : ''].filter(Boolean).join(', ');
+    main.append(make('span', 'entry-title', site.host), make('span', 'entry-sub', notes));
+    row.append(main, iconButton('close', `Reset ${site.host}`, () => api.forgetSite(site.host)));
+    list.append(row);
+  }
+}
+
 function renderShield() {
   const tab = activeTab();
   const { shield, settings } = state;
@@ -900,6 +968,26 @@ function wirePanel() {
   $('auto-update').addEventListener('change', (e) => api.setSettings({ autoUpdate: e.target.checked }));
   $('update-check').addEventListener('click', () => api.checkForUpdate());
   $('tor-open').addEventListener('click', () => api.newTorTab());
+  $('site-adblock').addEventListener('change', () => api.toggleSite());
+  $('site-zoom-in').addEventListener('click', () => api.runAction('zoomIn'));
+  $('site-zoom-out').addEventListener('click', () => api.runAction('zoomOut'));
+  $('site-zoom-reset').addEventListener('click', () => api.runAction('zoomReset'));
+  const clearSite = $('site-clear');
+  let clearSiteTimer = null;
+  clearSite.addEventListener('click', async () => {
+    if (!clearSiteTimer) {
+      clearSite.textContent = 'Click again to clear this site and sign out of it';
+      clearSiteTimer = setTimeout(() => {
+        clearSiteTimer = null;
+        clearSite.textContent = "Clear this site's cookies and data";
+      }, 4000);
+      return;
+    }
+    clearTimeout(clearSiteTimer);
+    clearSiteTimer = null;
+    clearSite.textContent = "Clear this site's cookies and data";
+    await api.clearSiteData();
+  });
   $('side-collapse').addEventListener('change', (e) => api.setSettings({ sideCollapse: e.target.checked }));
   $('https-only').addEventListener('change', (e) => api.setSettings({ httpsOnly: e.target.checked }));
   $('strip-tracking').addEventListener('change', (e) => api.setSettings({ stripTracking: e.target.checked }));
@@ -1033,6 +1121,7 @@ const PALETTE_ACTIONS = [
   ['Show history', () => showPanel('library', 'history')],
   ['Show downloads', () => showPanel('downloads')],
   ['Show ad blocker', () => showPanel('shield')],
+  ['This site: settings and permissions', () => showPanel('site')],
   ['Customize', () => showPanel('customize')],
   ['Find in page', () => { $('findbar').hidden = false; watchContent.send(); $('find-input').focus(); }],
   ['Print', () => api.runAction('print')],

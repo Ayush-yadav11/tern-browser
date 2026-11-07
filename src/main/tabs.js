@@ -14,7 +14,7 @@ const MAX_CLOSED = 20;
 // A tab only owns a renderer while it is awake. New tabs and sleeping tabs have
 // view === null, and the shell draws whatever belongs in the content area instead.
 class Tabs extends EventEmitter {
-  constructor({ window, session, torSession, onShortcut, getSleepMinutes, getWebRtcPolicy, getSearchUrl, getHttpsOnly, getStripTracking }) {
+  constructor({ window, session, torSession, onShortcut, getSleepMinutes, getWebRtcPolicy, getSearchUrl, getHttpsOnly, getStripTracking, getSiteZoom }) {
     super();
     this.window = window;
     this.session = session;
@@ -26,6 +26,7 @@ class Tabs extends EventEmitter {
     this.getSearchUrl = getSearchUrl;
     this.getHttpsOnly = getHttpsOnly;
     this.getStripTracking = getStripTracking;
+    this.getSiteZoom = getSiteZoom;
     // Sites allowed to stay on http until Tern closes. Tor tabs keep their own list.
     this.httpAllowed = new Set();
     this.httpsWaitMs = HTTPS_WAIT_MS;
@@ -69,6 +70,7 @@ class Tabs extends EventEmitter {
         sleeping: !t.view && Boolean(t.url),
         audible: Boolean(t.view?.webContents.isCurrentlyAudible()),
         muted: t.muted,
+        zoom: t.view ? Math.round(t.view.webContents.getZoomFactor() * 100) : 100,
         pinned: t.pinned,
       })),
     };
@@ -386,8 +388,16 @@ class Tabs extends EventEmitter {
   }
 
   zoom(step) {
-    const wc = this.active?.view?.webContents;
-    if (wc) wc.setZoomLevel(step === 0 ? 0 : wc.getZoomLevel() + step);
+    const tab = this.active;
+    const wc = tab?.view?.webContents;
+    if (wc) this.setZoom(tab, step === 0 ? 0 : wc.getZoomLevel() + step);
+  }
+
+  // Remembered per site, except in Tor tabs, which keep nothing.
+  setZoom(tab, level) {
+    tab.view.webContents.setZoomLevel(level);
+    if (!tab.tor && isWebUrl(tab.url)) this.emit('site-zoom', hostOf(tab.url), level);
+    this.changed();
   }
 
   wake(tab) {
@@ -512,7 +522,11 @@ class Tabs extends EventEmitter {
         if (hostOf(url) !== tab.faviconHost) tab.favicon = '';
         tab.faviconHost = hostOf(url);
         tab.url = url;
-        if (!tab.tor) this.emit('visit', url, '');
+        if (!tab.tor) {
+          this.emit('visit', url, '');
+          const level = this.getSiteZoom(hostOf(url));
+          if (wc.getZoomLevel() !== level) wc.setZoomLevel(level);
+        }
       }
       update();
     });
@@ -544,7 +558,7 @@ class Tabs extends EventEmitter {
     wc.on('media-started-playing', update);
     wc.on('audio-state-changed', update);
     wc.on('zoom-changed', (_e, direction) => {
-      wc.setZoomLevel(wc.getZoomLevel() + (direction === 'in' ? 0.5 : -0.5));
+      this.setZoom(tab, wc.getZoomLevel() + (direction === 'in' ? 0.5 : -0.5));
     });
     wc.on('media-paused', update);
 

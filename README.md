@@ -9,6 +9,12 @@ Download `Tern-Setup-x.y.z.exe` from the [latest release](https://github.com/Ayu
 and run it. It installs for your Windows account only, without needing admin rights. Because the
 installer isn't code-signed yet, Windows SmartScreen may warn you: choose **More info**, then **Run anyway**.
 
+## Per-site settings
+
+Click the padlock for the This site panel: connection status, ad blocker, zoom, permissions and clearing that site's
+cookies and data. Zoom is remembered per site, and the panel lists every site with custom settings so they're easy
+to reset. Tor tabs don't save any of this.
+
 ## Search shortcuts
 
 Type `!w cats` or `cats !w` in the address bar to search that site directly. Tern knows `!w`, `!yt`, `!g`, `!d`, `!gh`,

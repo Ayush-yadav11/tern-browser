@@ -64,6 +64,24 @@
             <dt>Filter lists updated</dt><dd id="shield-updated"></dd>
           </dl>
         </div>
+        <div id="panel-site" class="panel-body" hidden>
+          <p id="site-host" class="site-host"></p>
+          <p id="site-security" class="muted"></p>
+          <label class="row"><span>Ad blocker <span id="site-blocked" class="muted-inline"></span></span><input id="site-adblock" type="checkbox" class="switch"></label>
+          <div class="row"><span>Zoom</span>
+            <span class="inline zoom-controls">
+              <button id="site-zoom-out" class="icon" aria-label="Zoom out" title="Zoom out">&minus;</button>
+              <button id="site-zoom-reset" class="link" title="Reset zoom"></button>
+              <button id="site-zoom-in" class="icon" aria-label="Zoom in" title="Zoom in">+</button>
+            </span>
+          </div>
+          <h3 id="site-permissions-title">Permissions</h3>
+          <ul id="site-permissions" class="rows"></ul>
+          <button id="site-clear" class="link" type="button">Clear this site's cookies and data</button>
+          <h3>Sites with custom settings</h3>
+          <ul id="site-list" class="rows"></ul>
+          <p id="site-list-empty" class="muted">None yet. Zoom a page or turn off the ad blocker for a site, and it'll show here.</p>
+        </div>
         <div id="panel-library" class="panel-body" hidden>
           <div class="seg" id="seg-library" role="group" aria-label="Bookmarks or history">
             <button data-value="bookmarks">Bookmarks</button><button data-value="history">History</button>
