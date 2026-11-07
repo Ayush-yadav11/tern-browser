@@ -17,6 +17,16 @@
     <header id="toolbar" class="drag"></header>
     <div id="strips">
     <nav id="bookmarks-bar" class="no-drag" aria-label="Bookmarks bar" hidden></nav>
+    <div id="reader-bar" hidden>
+      <span id="reader-label">Reader view</span>
+      <button id="reader-smaller" class="icon" title="Smaller text" aria-label="Smaller text">A&minus;</button>
+      <span id="reader-size" aria-live="polite"></span>
+      <button id="reader-larger" class="icon" title="Larger text" aria-label="Larger text">A+</button>
+      <label class="row reader-serif"><span>Serif</span><input id="reader-serif" type="checkbox" class="switch"></label>
+      <span class="spacer"></span>
+      <button id="reader-exit" class="link" title="Back to the original page (Esc)">Exit reader view</button>
+    </div>
+    <div id="reader-note" role="status" hidden></div>
     <div id="findbar" hidden>
       <input id="find-input" placeholder="Find in page" aria-label="Find in page" spellcheck="false">
       <span id="find-count" aria-live="polite"></span>

@@ -2,6 +2,7 @@
 
 const { EventEmitter } = require('node:events');
 const { Menu, WebContentsView, clipboard } = require('electron');
+const { extractArticle, readerPage, readerStyle } = require('./reader');
 const { hostOf, isLocalHost, isWebUrl, stripTracking } = require('./url');
 
 // These mean the site or network is the problem, not that the site lacks HTTPS.
@@ -14,7 +15,7 @@ const MAX_CLOSED = 20;
 // A tab only owns a renderer while it is awake. New tabs and sleeping tabs have
 // view === null, and the shell draws whatever belongs in the content area instead.
 class Tabs extends EventEmitter {
-  constructor({ window, session, torSession, onShortcut, getSleepMinutes, getWebRtcPolicy, getSearchUrl, getHttpsOnly, getStripTracking, getSiteZoom }) {
+  constructor({ window, session, torSession, onShortcut, getSleepMinutes, getWebRtcPolicy, getSearchUrl, getHttpsOnly, getStripTracking, getSiteZoom, getReaderText }) {
     super();
     this.window = window;
     this.session = session;
@@ -27,6 +28,7 @@ class Tabs extends EventEmitter {
     this.getHttpsOnly = getHttpsOnly;
     this.getStripTracking = getStripTracking;
     this.getSiteZoom = getSiteZoom;
+    this.getReaderText = getReaderText;
     // Sites allowed to stay on http until Tern closes. Tor tabs keep their own list.
     this.httpAllowed = new Set();
     this.httpsWaitMs = HTTPS_WAIT_MS;
@@ -70,6 +72,8 @@ class Tabs extends EventEmitter {
         sleeping: !t.view && Boolean(t.url),
         audible: Boolean(t.view?.webContents.isCurrentlyAudible()),
         muted: t.muted,
+        reader: Boolean(t.readerView),
+        readerNote: t.readerNote ?? '',
         zoom: t.view ? Math.round(t.view.webContents.getZoomFactor() * 100) : 100,
         pinned: t.pinned,
       })),
@@ -111,6 +115,7 @@ class Tabs extends EventEmitter {
     const previous = this.active;
     if (previous?.view && previous !== tab) {
       this.window.contentView.removeChildView(previous.view);
+      if (previous.readerView) this.window.contentView.removeChildView(previous.readerView);
       previous.lastActive = Date.now();
     }
     this.activeId = id;
@@ -185,9 +190,11 @@ class Tabs extends EventEmitter {
     // Adding a view again would lift it above the suggestions list.
     if (!this.window.contentView.children.includes(tab.view)) {
       this.window.contentView.addChildView(tab.view);
+      if (tab.readerView) this.window.contentView.addChildView(tab.readerView);
       this.emit('attached');
     }
     tab.view.setBounds(this.fullscreen ? this.fullBounds() : this.bounds);
+    tab.readerView?.setBounds(this.bounds);
   }
 
   // A link that turned out to be a file shouldn't leave its tab stuck on the file's address.
@@ -214,6 +221,7 @@ class Tabs extends EventEmitter {
   setBounds(bounds) {
     this.bounds = bounds;
     if (this.active?.view && !this.fullscreen) this.active.view.setBounds(bounds);
+    this.active?.readerView?.setBounds(bounds);
   }
 
   close(id) {
@@ -293,8 +301,120 @@ class Tabs extends EventEmitter {
     this.tabs.slice(index + 1).filter((t) => !t.pinned).forEach((t) => this.close(t.id));
   }
 
+  // What the user is actually looking at in a tab: the reader when it's open.
+  contentsFor(tab) {
+    return tab?.readerView?.webContents ?? tab?.view?.webContents ?? null;
+  }
+
   print(id) {
-    this.byId(id)?.view?.webContents.print({}, () => {});
+    this.contentsFor(this.byId(id))?.print({}, () => {});
+  }
+
+  async toggleReader(id, theme) {
+    const tab = this.byId(id);
+    if (!tab) return;
+    tab.readerTheme = theme ?? tab.readerTheme;
+    if (tab.readerView) {
+      this.closeReader(tab);
+      tab.view?.webContents.focus();
+      this.changed();
+      return;
+    }
+    if (!tab.view || tab.loading) return;
+    let article = null;
+    try {
+      article = await extractArticle(tab.view.webContents);
+    } catch {
+      article = null;
+    }
+    if (!tab.view) return;
+    if (!article) {
+      tab.readerNote = "This page doesn't have an article to show in reader view.";
+      clearTimeout(tab.readerNoteTimer);
+      tab.readerNoteTimer = setTimeout(() => {
+        tab.readerNote = '';
+        this.changed();
+      }, 4000);
+      tab.readerNoteTimer.unref?.();
+      this.changed();
+      return;
+    }
+    await this.openReader(tab, article);
+    this.changed();
+  }
+
+  // Same session as the tab, so images follow its rules: through Tor in a Tor tab, and past the
+  // ad blocker in all of them. Scripts are off, and any link leaves the reader instead of following.
+  async openReader(tab, article) {
+    const view = new WebContentsView({
+      webPreferences: {
+        session: tab.tor ? this.torSession : this.session,
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+        webviewTag: false,
+        javascript: false,
+        spellcheck: false,
+      },
+    });
+    const wc = view.webContents;
+    wc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
+    wc.setWindowOpenHandler(({ url }) => {
+      if (isWebUrl(url)) this.create(url, { tor: tab.tor });
+      return { action: 'deny' };
+    });
+    wc.on('will-navigate', (event, url) => {
+      event.preventDefault();
+      if (isWebUrl(url)) this.navigate(tab.id, url);
+    });
+    wc.on('before-input-event', (event, input) => {
+      if (input.type === 'keyDown' && input.key === 'Escape') {
+        event.preventDefault();
+        this.closeReader(tab);
+        tab.view?.webContents.focus();
+        this.changed();
+      } else if (this.onShortcut(input)) {
+        event.preventDefault();
+      }
+    });
+    wc.on('found-in-page', (_e, result) => this.emit('found', result));
+    wc.on('context-menu', (_e, p) => {
+      const items = [
+        ...(p.selectionText ? [{ role: 'copy' }, { type: 'separator' }] : []),
+        ...(isWebUrl(p.linkURL) ? [{ label: 'Copy link address', click: () => clipboard.writeText(p.linkURL) }, { type: 'separator' }] : []),
+        { label: 'Print…', click: () => wc.print({}, () => {}) },
+        { label: 'Exit reader view', click: () => this.toggleReader(tab.id) },
+      ];
+      Menu.buildFromTemplate(items).popup({ window: this.window });
+    });
+    tab.readerView = view;
+    view.setBounds(this.bounds);
+    if (tab.id === this.activeId) this.window.contentView.addChildView(view);
+    this.emit('attached');
+    await wc.loadURL(readerPage(article, { pageUrl: tab.url })).catch(() => {});
+    if (tab.readerView === view) {
+      await this.styleReader(tab);
+      if (tab.id === this.activeId) wc.focus();
+    }
+  }
+
+  async styleReader(tab, theme) {
+    if (theme) tab.readerTheme = theme;
+    const wc = tab.readerView?.webContents;
+    if (!wc || wc.isDestroyed()) return;
+    const css = readerStyle({ theme: tab.readerTheme, ...this.getReaderText() });
+    const key = await wc.insertCSS(css, { cssOrigin: 'user' }).catch(() => null);
+    if (tab.readerCssKey) wc.removeInsertedCSS(tab.readerCssKey).catch(() => {});
+    tab.readerCssKey = key;
+  }
+
+  closeReader(tab) {
+    const view = tab.readerView;
+    if (!view) return;
+    tab.readerView = null;
+    tab.readerCssKey = null;
+    this.window.contentView.removeChildView(view);
+    if (!view.webContents.isDestroyed()) view.webContents.close({ waitForBeforeUnload: false });
   }
 
   savePage(id) {
@@ -389,6 +509,10 @@ class Tabs extends EventEmitter {
 
   zoom(step) {
     const tab = this.active;
+    if (tab?.readerView) {
+      this.emit('reader-zoom', step);
+      return;
+    }
     const wc = tab?.view?.webContents;
     if (wc) this.setZoom(tab, step === 0 ? 0 : wc.getZoomLevel() + step);
   }
@@ -433,6 +557,7 @@ class Tabs extends EventEmitter {
 
   destroyView(tab) {
     if (!tab.view) return;
+    this.closeReader(tab);
     const { view } = tab;
     tab.view = null;
     clearTimeout(tab.upgradeTimer);
@@ -508,6 +633,7 @@ class Tabs extends EventEmitter {
 
     wc.on('did-start-navigation', (details) => {
       if (!details.isMainFrame || details.isSameDocument) return;
+      this.closeReader(tab);
       tab.error = null;
       tab.blockedBefore = tab.blocked;
       tab.blocked = 0;

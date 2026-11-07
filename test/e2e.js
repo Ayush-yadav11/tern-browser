@@ -42,6 +42,18 @@ function serve() {
     if (req.url.startsWith('/ok.gif')) {
       res.writeHead(200, { 'content-type': 'image/png' });
       res.end(PNG);
+    } else if (req.url.startsWith('/article')) {
+      const paragraph = '<p>The quick brown tern flew over the lazy harbour, and everyone watching agreed it was a remarkable sight indeed, with plenty of words in every sentence for the reader to find.</p>';
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end(`<!doctype html><html><head><title>A Long Article About Terns</title></head><body>
+        <nav><a href="/x">Site menu that should go away</a></nav>
+        <article><h1>A Long Article About Terns</h1>
+        ${paragraph.repeat(12)}
+        <p><a id="link" href="/next-page" onclick="window.evil=1">a link</a></p>
+        <script>window.ranInArticle = 1;</script>
+        <img src="/ok.gif" onerror="window.evil=2" alt="a bird">
+        <iframe src="/inner"></iframe><form action="/steal"><input name="q"></form>
+        </article><script>window.pageReady = 1;</script></body></html>`);
     } else if (req.url.startsWith('/tracked-redirect')) {
       res.writeHead(302, { location: '/landing?utm_source=mail&keep=1' });
       res.end();
@@ -691,6 +703,83 @@ async function main() {
     await shellEval('togglePanel(openPanel)');
   });
 
+  const readerHtml = () => Buffer.from(tab.readerView.webContents.getURL().split('base64,')[1], 'base64').toString('utf8');
+
+  await check('reader view: shows just the article, with nothing active from the page', async () => {
+    await load(`${base}/article`);
+    await waitFor(() => inShell(() => !document.getElementById('reader-toggle').hidden), 2000);
+    await inShell(() => document.getElementById('reader-toggle').click());
+    await waitFor(() => tab.readerView, 4000);
+    await waitFor(() => tab.readerView.webContents.getURL().startsWith('data:text/html'), 4000);
+    const html = readerHtml();
+    assert.ok(html.includes('The quick brown tern'), 'the article is there');
+    assert.ok(html.includes('min read'));
+    assert.ok(!html.includes('Site menu'), 'the site menu is gone');
+    for (const bad of ['<script', 'onclick', 'onerror', '<iframe', '<form', 'window.evil']) assert.ok(!html.toLowerCase().includes(bad.toLowerCase()), bad);
+    assert.ok(html.includes("default-src 'none'"), 'second lock in place');
+    assert.equal(tab.readerView.webContents.getLastWebPreferences().javascript, false, 'scripts are off');
+    assert.equal(win.contentView.children.at(-1), tab.readerView, 'shown above the page');
+    assert.deepEqual(tab.readerView.getBounds(), tab.view.getBounds());
+    await waitFor(() => inShell(() => !document.getElementById('reader-bar').hidden), 2000);
+    await sleep(300);
+    await shot(tab.readerView.webContents, '30-reader-view');
+    await sleep(300);
+    assert.deepEqual(tab.readerView.getBounds(), tab.view.getBounds(), 'still lined up with the bar showing');
+  });
+
+  await check('reader view: text size and serif are remembered, and the zoom keys change the text size', async () => {
+    await inShell(() => document.getElementById('reader-larger').click());
+    await waitFor(() => b.getSettings().readerFontSize === 20, 2000);
+    await inShell(() => document.getElementById('reader-serif').click());
+    await waitFor(() => b.getSettings().readerSerif === true, 2000);
+    tabs.zoom(0.5);
+    assert.equal(b.getSettings().readerFontSize, 21);
+    assert.equal(b.getSettings().siteZoom[TEST_HOST], undefined, 'site zoom is left alone');
+    tabs.zoom(0);
+    assert.equal(b.getSettings().readerFontSize, 19);
+    assert.equal(clean({ readerFontSize: 500 }).readerFontSize, 32);
+    b.updateSettings({ readerSerif: false });
+  });
+
+  await check('reader view: stays with its tab, and links and Esc leave it', async () => {
+    const other = tabs.create(`${base}/ads?other=1`);
+    await waitFor(() => other.view && !other.loading);
+    assert.ok(!win.contentView.children.includes(tab.readerView), 'hidden on another tab');
+    assert.equal(await inShell(() => document.getElementById('reader-bar').hidden), true);
+    tabs.close(other.id);
+    tabs.activate(tab.id);
+    assert.equal(win.contentView.children.at(-1), tab.readerView, 'back again');
+    let stopped = false;
+    tab.readerView.webContents.emit('will-navigate', { preventDefault: () => { stopped = true; } }, `${base}/next-page`);
+    assert.equal(stopped, true);
+    await waitFor(() => tab.url === `${base}/next-page` && !tab.readerView && !tab.loading, 4000);
+    await load(`${base}/article?esc=1`);
+    await tabs.toggleReader(tab.id);
+    await waitFor(() => tab.readerView, 3000);
+    tab.readerView.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
+    await waitFor(() => !tab.readerView, 2000);
+    assert.ok(win.contentView.children.includes(tab.view));
+  });
+
+  await check('reader view: pages without an article say so, and side tabs still work over it', async () => {
+    await load(`${base}/ads?short=1`);
+    await tabs.toggleReader(tab.id);
+    assert.equal(tab.readerView ?? null, null);
+    await waitFor(() => inShell(() => !document.getElementById('reader-note').hidden), 2000);
+    tab.readerNote = '';
+    clearTimeout(tab.readerNoteTimer);
+    tabs.changed();
+    await load(`${base}/article?side=1`);
+    await tabs.toggleReader(tab.id);
+    await waitFor(() => tab.readerView, 3000);
+    await shellEval('window.tern.setSideOpen(true)');
+    assert.equal(win.contentView.children.at(-1).webContents, shell);
+    await shellEval('window.tern.setSideOpen(false)');
+    assert.equal(win.contentView.children.at(-1), tab.readerView, 'reader goes back on top');
+    await tabs.toggleReader(tab.id);
+    assert.equal(tab.readerView, null);
+  });
+
   await check('tabs: pin keeps a tab first, and duplicate, close others and close right work', async () => {
     const a = tabs.create(`${base}/a`, { activate: false });
     const c = tabs.create(`${base}/c`, { activate: false });
@@ -931,6 +1020,16 @@ async function main() {
     await waitFor(() => torTab.error, 8000);
     assert.ok(!directHits.includes('/tor-is-down'), 'nothing reached the site');
     await b.useTorPort(socks.port);
+  });
+
+  await check('Tor tab: reader view stays on the Tor connection', async () => {
+    const article = { title: 'T', byline: '', site: '', length: 400, content: '<p>text</p><img src="http://reader-image.invalid/i.png" alt="">' };
+    await tabs.openReader(torTab, article);
+    assert.equal(torTab.readerView.webContents.session, b.torSession);
+    assert.equal(torTab.readerView.webContents.getLastWebPreferences().javascript, false);
+    await sleep(600);
+    assert.ok(socks.seen.some((s) => s.host === 'reader-image.invalid'), 'the image went through Tor');
+    tabs.closeReader(torTab);
   });
 
   await check('Tor tab: zoom is not saved', async () => {

@@ -200,6 +200,7 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
       'c+pagedown': () => tabs.cycle(1),
       'c+pageup': () => tabs.cycle(-1),
       'cs+i': () => tabs.active?.view?.webContents.toggleDevTools(),
+      'ca+r': () => send('tern:toggle-reader'),
       'c+d': () => toggleBookmark(),
       'cs+b': () => update({ bookmarksBar: !settings.bookmarksBar }),
       'cs+o': () => send('tern:open-panel', { panel: 'library', tab: 'bookmarks' }),
@@ -237,6 +238,7 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     getHttpsOnly: () => settings.httpsOnly,
     getStripTracking: () => settings.stripTracking,
     getSiteZoom: (host) => settings.siteZoom[host] ?? 0,
+    getReaderText: () => ({ fontSize: settings.readerFontSize, serif: settings.readerSerif }),
     getSearchUrl: (text) => SEARCH_ENGINES[settings.searchEngine].url + encodeURIComponent(text),
   });
 
@@ -320,6 +322,11 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
   tabs.on('site-zoom', (host, level) => {
     const { [host]: _old, ...others } = settings.siteZoom;
     update({ siteZoom: level === 0 ? others : { ...others, [host]: level } });
+  });
+
+  tabs.on('reader-zoom', (step) => {
+    update({ readerFontSize: step === 0 ? DEFAULTS.readerFontSize : settings.readerFontSize + (step > 0 ? 1 : -1) });
+    for (const tab of tabs.tabs) if (tab.readerView) tabs.styleReader(tab).catch(() => {});
   });
 
   const library = new Library(profile);
@@ -524,11 +531,15 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
       sideOpen = Boolean(open);
       // Reordering views can move keyboard focus, and hovering shouldn't interrupt typing.
       const page = tabs.active?.view;
-      const pageHadFocus = Boolean(page?.webContents.isFocused());
+      const shown = tabs.contentsFor(tabs.active);
+      const pageHadFocus = Boolean(shown?.isFocused());
       if (sideOpen) win.contentView.addChildView(shellView);
-      else if (page && win.contentView.children.includes(page)) win.contentView.addChildView(page);
+      else if (page && win.contentView.children.includes(page)) {
+        win.contentView.addChildView(page);
+        if (tabs.active.readerView) win.contentView.addChildView(tabs.active.readerView);
+      }
       raiseOverlays();
-      if (pageHadFocus) page.webContents.focus();
+      if (pageHadFocus) shown.focus();
     },
     // Things the palette can do that the interface can't do by itself.
     'tern:run-action': (name) => {
@@ -555,6 +566,10 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     },
     'tern:tab-menu': (id) => tabs.tabMenu(id),
     'tern:toggle-muted': (id) => tabs.toggleMuted(id),
+    'tern:toggle-reader': (id, theme) => tabs.toggleReader(id, theme),
+    'tern:style-reader': (theme) => {
+      for (const tab of tabs.tabs) if (tab.readerView) tabs.styleReader(tab, theme).catch(() => {});
+    },
     // Everything the This site panel shows. Nothing here is written anywhere for Tor tabs.
     'tern:site-info': () => {
       const tab = tabs.active;
@@ -716,13 +731,13 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
       tabs.reload(tabs.activeId);
     },
     'tern:find': (text, options) => {
-      const wc = tabs.active?.view?.webContents;
+      const wc = tabs.contentsFor(tabs.active);
       if (!wc) return;
       if (text) wc.findInPage(String(text), { forward: options?.forward !== false, findNext: Boolean(options?.next) });
       else wc.stopFindInPage('clearSelection');
     },
-    'tern:find-stop': () => tabs.active?.view?.webContents.stopFindInPage('clearSelection'),
-    'tern:focus-page': () => tabs.active?.view?.webContents.focus(),
+    'tern:find-stop': () => tabs.contentsFor(tabs.active)?.stopFindInPage('clearSelection'),
+    'tern:focus-page': () => tabs.contentsFor(tabs.active)?.focus(),
   };
   for (const [channel, handler] of Object.entries(handlers)) {
     ipcMain.handle(channel, fromShell(handler));

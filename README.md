@@ -9,6 +9,11 @@ Download `Tern-Setup-x.y.z.exe` from the [latest release](https://github.com/Ayu
 and run it. It installs for your Windows account only, without needing admin rights. Because the
 installer isn't code-signed yet, Windows SmartScreen may warn you: choose **More info**, then **Run anyway**.
 
+## Reader view
+
+Press the lines icon in the address bar, or Ctrl+Alt+R, to read an article without the clutter, with your own text
+size and font. Scripts are off in reader view, and a Tor tab's reader stays on Tor.
+
 ## Per-site settings
 
 Click the padlock for the This site panel: connection status, ad blocker, zoom, permissions and clearing that site's
@@ -94,6 +99,7 @@ npm start
 | Path | What it does |
 | --- | --- |
 | `src/main/app.js` | Starts the browser: window, keyboard shortcuts, permissions, messages from the UI |
+| `src/main/reader.js` | Reader view: pulls out the article and strips anything active |
 | `src/main/tabs.js` | Tabs, including putting unused ones to sleep to free memory |
 | `src/main/adblock.js` | Ad and tracker blocking, per-site switch, filter refresh |
 | `src/page/privacy-preload.js` | Shows the Global Privacy Control signal to page scripts |
@@ -125,6 +131,7 @@ to `THEMES` in both `src/shell/shell.js` and `src/main/settings.js`.
 | Ctrl+1 to Ctrl+9 | Jump to a tab |
 | Ctrl+L | Address bar |
 | Ctrl+K | Command palette: tabs, bookmarks, history and actions |
+| Ctrl+Alt+R | Reader view |
 | Ctrl+F | Find in page |
 | Ctrl+P / Ctrl+S | Print / save page |
 | Ctrl+PageDown / Ctrl+PageUp | Next / previous tab |
@@ -151,6 +158,7 @@ to `THEMES` in both `src/shell/shell.js` and `src/main/settings.js`.
 
 ## Credits
 
+Reader view uses [Readability](https://github.com/mozilla/readability) (Apache-2.0) from Mozilla.
 IP hiding uses [Tor](https://www.torproject.org/). Licenses are in `resources/tor/docs` of the installed app.
 Ad blocking uses [@ghostery/adblocker](https://github.com/ghostery/adblocker) (MPL-2.0).
 Runs on [Electron](https://www.electronjs.org/) and Chromium.

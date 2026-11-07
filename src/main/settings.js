@@ -23,6 +23,8 @@ const DEFAULTS = {
   autoUpdate: true,
   sideCollapse: true,
   httpsOnly: true,
+  readerFontSize: 19,
+  readerSerif: false,
   siteZoom: {},
   stripTracking: true,
   globalPrivacyControl: true,
@@ -59,6 +61,10 @@ function clean(input, base = DEFAULTS) {
   if ('autoUpdate' in input) s.autoUpdate = Boolean(input.autoUpdate);
   if ('sideCollapse' in input) s.sideCollapse = Boolean(input.sideCollapse);
   if ('httpsOnly' in input) s.httpsOnly = Boolean(input.httpsOnly);
+  if ('readerSerif' in input) s.readerSerif = Boolean(input.readerSerif);
+  if ('readerFontSize' in input && Number.isFinite(input.readerFontSize)) {
+    s.readerFontSize = Math.min(32, Math.max(13, Math.round(input.readerFontSize)));
+  }
   if (input.siteZoom && typeof input.siteZoom === 'object') {
     s.siteZoom = Object.fromEntries(Object.entries(input.siteZoom)
       .filter(([host, level]) => host.length < 254 && Number.isFinite(level) && level !== 0 && Math.abs(level) <= 8)

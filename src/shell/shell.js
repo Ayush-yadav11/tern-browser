@@ -18,6 +18,7 @@ const ICON = {
   library: '<path d="M3 3v10M6 3v10M9.5 3.5l3.5 9.5"/>',
   downloads: '<path d="M8 2.5v7.5M4.5 7L8 10.5 11.5 7M3 13.5h10"/>',
   edit: '<path d="M3 13l.7-2.8L10.5 3.4l2.1 2.1-6.8 6.8z"/>',
+  reader: '<path d="M3 3h10M3 6.5h10M3 10h10M3 13.5h6"/>',
   menu: '<circle cx="8" cy="3.5" r=".6"/><circle cx="8" cy="8" r=".6"/><circle cx="8" cy="12.5" r=".6"/>',
   speaker: '<path d="M3 6.5v3h2.2L8.5 12V4L5.2 6.5zM10.5 6a3 3 0 0 1 0 4M12 4.5a5 5 0 0 1 0 7"/>',
   muted: '<path d="M3 6.5v3h2.2L8.5 12V4L5.2 6.5zM10.5 6.5l3 3M13.5 6.5l-3 3"/>',
@@ -72,7 +73,7 @@ function buildToolbar(items) {
       const form = document.createElement('form');
       form.id = 'address';
       form.className = 'no-drag';
-      form.innerHTML = '<button id="secure" type="button" hidden></button><input id="address-input" placeholder="Search or enter address" aria-label="Address and search" spellcheck="false" autocomplete="off"><button id="zoom-pill" type="button" hidden></button>';
+      form.innerHTML = '<button id="secure" type="button" hidden></button><input id="address-input" placeholder="Search or enter address" aria-label="Address and search" spellcheck="false" autocomplete="off"><button id="zoom-pill" type="button" hidden></button><button id="reader-toggle" type="button" hidden aria-label="Reader view" title="Reader view (Ctrl+Alt+R)"></button>';
       form.addEventListener('submit', (e) => {
         e.preventDefault();
         go($('address-input').value);
@@ -80,6 +81,8 @@ function buildToolbar(items) {
       const input = form.querySelector('input');
       form.querySelector('#secure').addEventListener('click', () => togglePanel('site'));
       form.querySelector('#zoom-pill').addEventListener('click', () => togglePanel('site'));
+      form.querySelector('#reader-toggle').innerHTML = svg('reader');
+      form.querySelector('#reader-toggle').addEventListener('click', toggleReader);
       input.addEventListener('focus', () => input.select());
       // Clicking the page without pressing Enter puts the real address back.
       input.addEventListener('blur', () => setTimeout(renderToolbar, 200));
@@ -153,6 +156,12 @@ function renderToolbar() {
       el.setAttribute('aria-label', el.title);
     }
   });
+  set2('reader-toggle', (el) => {
+    el.hidden = !tab.url || Boolean(tab.error);
+    el.classList.toggle('on', tab.reader);
+    el.setAttribute('aria-pressed', String(tab.reader));
+  });
+  renderReaderBar(tab);
   set2('zoom-pill', (el) => {
     el.hidden = tab.zoom === 100;
     el.textContent = `${tab.zoom}%`;
@@ -201,6 +210,39 @@ function renderToolbar() {
     el.setAttribute('aria-pressed', String(openPanel === 'downloads'));
     el.title = active ? `Downloads: ${active} running` : 'Downloads (Ctrl+J)';
   });
+}
+
+/* Reader view */
+function readerTheme() {
+  const css = getComputedStyle(document.body);
+  const value = (name) => css.getPropertyValue(name).trim();
+  return {
+    '--reader-scheme': css.colorScheme === 'light' ? 'light' : 'dark',
+    '--reader-bg': value('--bg'),
+    '--reader-text': value('--text'),
+    '--reader-muted': value('--muted'),
+    '--reader-line': value('--line'),
+    '--reader-accent': value('--accent'),
+  };
+}
+
+const toggleReader = () => api.toggleReader(state.activeId, readerTheme());
+
+function renderReaderBar(tab) {
+  const shown = !$('reader-bar').hidden;
+  $('reader-bar').hidden = !tab.reader;
+  $('reader-note').hidden = !tab.readerNote;
+  $('reader-note').textContent = tab.readerNote;
+  if (shown !== tab.reader) watchContent.send();
+  if (!tab.reader) return;
+  const { readerFontSize, readerSerif } = state.settings;
+  $('reader-size').textContent = `${readerFontSize}px`;
+  $('reader-serif').checked = readerSerif;
+  const theme = JSON.stringify(readerTheme()) + readerFontSize + readerSerif;
+  if (theme !== renderReaderBar.last) {
+    renderReaderBar.last = theme;
+    api.styleReader(readerTheme());
+  }
 }
 
 /* Address bar suggestions. The list itself is a separate view so it can sit above the page. */
@@ -968,6 +1010,11 @@ function wirePanel() {
   $('auto-update').addEventListener('change', (e) => api.setSettings({ autoUpdate: e.target.checked }));
   $('update-check').addEventListener('click', () => api.checkForUpdate());
   $('tor-open').addEventListener('click', () => api.newTorTab());
+  $('reader-smaller').addEventListener('click', () => api.setSettings({ readerFontSize: state.settings.readerFontSize - 1 }));
+  $('reader-larger').addEventListener('click', () => api.setSettings({ readerFontSize: state.settings.readerFontSize + 1 }));
+  $('reader-serif').addEventListener('change', (e) => api.setSettings({ readerSerif: e.target.checked }));
+  $('reader-exit').addEventListener('click', toggleReader);
+  api.onToggleReader(toggleReader);
   $('site-adblock').addEventListener('change', () => api.toggleSite());
   $('site-zoom-in').addEventListener('click', () => api.runAction('zoomIn'));
   $('site-zoom-out').addEventListener('click', () => api.runAction('zoomOut'));
@@ -1123,6 +1170,7 @@ const PALETTE_ACTIONS = [
   ['Show ad blocker', () => showPanel('shield')],
   ['This site: settings and permissions', () => showPanel('site')],
   ['Customize', () => showPanel('customize')],
+  ['Reader view', () => toggleReader()],
   ['Find in page', () => { $('findbar').hidden = false; watchContent.send(); $('find-input').focus(); }],
   ['Print', () => api.runAction('print')],
   ['Save page', () => api.runAction('save')],

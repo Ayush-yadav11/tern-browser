@@ -259,7 +259,7 @@ body[data-tabs="top"] .tab.pinned .tab-title { display: none; }
 
 /* Address bar security mark */
 #address { position: relative; }
-#address input { padding-left: 30px; }
+#address input { padding-left: 30px; padding-right: 74px; }
 #secure { position: absolute; left: 4px; top: 50%; transform: translateY(-50%); width: 24px; height: 22px; padding: 0; border-radius: var(--radius); color: var(--muted); display: grid; place-items: center; }
 #secure:hover { background: var(--hover); }
 #secure svg { width: 14px; height: 14px; }
@@ -304,5 +304,19 @@ body[data-tabs="top"] .tab.pinned .tab-title { display: none; }
 .zoom-controls .link { min-width: 44px; text-align: center; color: var(--text); font-variant-numeric: tabular-nums; }
 .site-row { display: flex; align-items: center; gap: 8px; min-height: 36px; }
 .site-row .entry-main { flex: 1; min-width: 0; }
-#zoom-pill { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); height: 20px; padding: 0 7px; border-radius: 10px; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--text); background: var(--hover); }
+#zoom-pill { position: absolute; right: 32px; top: 50%; transform: translateY(-50%); height: 20px; padding: 0 7px; border-radius: 10px; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--text); background: var(--hover); }
 #zoom-pill:hover { background: var(--line); }
+
+/* Reader view */
+#reader-toggle { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 24px; height: 22px; padding: 0; border-radius: var(--radius); color: var(--muted); display: grid; place-items: center; }
+#reader-toggle svg { width: 15px; height: 15px; }
+#reader-toggle:hover { background: var(--hover); color: var(--text); }
+#reader-toggle.on { color: var(--accent); }
+#reader-bar { display: flex; align-items: center; gap: 6px; height: 34px; padding: 0 10px; background: var(--raised); border-bottom: 1px solid var(--line); }
+#reader-label { font-weight: 600; margin-right: 8px; }
+#reader-bar .icon { height: 24px; min-width: 28px; font-size: 12px; }
+#reader-size { min-width: 32px; text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; }
+.reader-serif { padding: 0; margin-left: 10px; gap: 8px; }
+#reader-bar .spacer { flex: 1; }
+#reader-exit { margin: 0; }
+#reader-note { padding: 6px 12px; background: var(--raised); border-bottom: 1px solid var(--line); color: var(--muted); }
