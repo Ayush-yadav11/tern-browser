@@ -830,8 +830,10 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
       'tern:site-clear-data': async () => {
         const tab = tabs.active;
         if (!tab || !isWebUrl(tab.url)) return;
-        await (tab.tor ? torSession : tabSession).clearStorageData({ origin: new URL(tab.url).origin });
-        tabs.reload(tab.id);
+        const { url } = tab;
+        await (tab.tor ? torSession : tabSession).clearStorageData({ origin: new URL(url).origin });
+        // Clearing can take a while. Reloading after you've gone elsewhere would pull you back.
+        if (tab.url === url) tabs.reload(tab.id);
       },
       'tern:site-forget': (host) => {
         const { [host]: _old, ...others } = settings.siteZoom;

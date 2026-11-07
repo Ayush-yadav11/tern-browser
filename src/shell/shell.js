@@ -1464,6 +1464,8 @@ function wirePanel() {
    is lifted above it with its middle transparent, and lowered again afterwards. */
 let sideOpen = false;
 let sideTimer = null;
+// Its own timer, so another open or close request can't cancel it and leave the interface raised.
+let sideLowerTimer = null;
 const SIDE_OPEN_DELAY_MS = 120;
 const SIDE_CLOSE_DELAY_MS = 250;
 const SIDE_ANIMATION_MS = 130;
@@ -1501,12 +1503,13 @@ async function setSideOpen(open) {
   clearTimeout(sideTimer);
   if (sideOpen === open) return;
   sideOpen = open;
+  clearTimeout(sideLowerTimer);
   if (open) {
     await setLift('side', true);
     if (sideOpen) document.body.classList.add('side-open');
   } else {
     document.body.classList.remove('side-open');
-    sideTimer = setTimeout(() => setLift('side', false), SIDE_ANIMATION_MS);
+    sideLowerTimer = setTimeout(() => setLift('side', false), SIDE_ANIMATION_MS);
   }
 }
 

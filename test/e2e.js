@@ -388,8 +388,27 @@ async function main() {
     assert.equal(await stripWidth(), 220, 'can stay open all the time');
     b.updateSettings({ sideCollapse: true, tabPosition: 'right' });
     await sleep(400);
-    assert.equal(await stripWidth(), 44);
+    // The strip moves to the right edge, which may be right under a real mouse pointer resting
+    // there, and that rightly opens it. The pointer moving away is what closes it again.
+    await inShell(() => document.getElementById('tabs').dispatchEvent(new MouseEvent('mouseleave')));
+    await waitFor(async () => (await stripWidth()) === 44, 2000);
     assert.deepEqual({ x: tab.view.getBounds().x }, { x: 0 });
+    b.updateSettings({ tabPosition: 'top' });
+    await sleep(400);
+  });
+
+  await check('side tabs: a second close signal while closing still puts the page back on top', async () => {
+    b.updateSettings({ tabPosition: 'left', sideCollapse: true });
+    await sleep(400);
+    const onTop = () => win.contentView.children.at(-1);
+    await shellEval('setSideOpen(true)');
+    await waitFor(() => onTop().webContents === shell, 2000);
+    // Focus leaving the strip, or a settings update, can ask to close again in the same moment.
+    await shellEval('setSideOpen(false); setSideOpen(false)');
+    await waitFor(() => onTop() === tab.view, 2000);
+    await waitFor(() => inShell(() => !document.body.classList.contains('lifted')), 2000);
+    await shellEval("setSideOpen(true).then(() => setSideOpen(false)); document.getElementById('tabs').dispatchEvent(new FocusEvent('focusout'))");
+    await waitFor(() => onTop() === tab.view, 2000);
     b.updateSettings({ tabPosition: 'top' });
     await sleep(400);
   });
@@ -723,6 +742,36 @@ async function main() {
     await b.tabSession.cookies.remove('http://other-site.example/', 'theirs');
     await waitFor(() => !tab.loading, 3000);
     await shellEval('togglePanel(openPanel)');
+  });
+
+  await check("This site panel: clearing a site's data doesn't pull you back once you've moved on", async () => {
+    await load(`${base}/ads?clear-then-leave=1`);
+    // Makes the clearing slow on purpose, the way it can be on a slower PC.
+    const realClear = b.tabSession.clearStorageData;
+    let finish = null;
+    b.tabSession.clearStorageData = (...args) => new Promise((resolve) => {
+      finish = () => realClear.apply(b.tabSession, args).then(resolve);
+    });
+    try {
+      const clearing = shellEval('window.tern.clearSiteData()');
+      await waitFor(() => finish, 2000);
+      const page = await load(`${base}/ads?moved-on=1`);
+      finish();
+      await clearing;
+      await sleep(1500);
+      assert.ok(page.url.includes('moved-on=1'), `still on the new page, not ${page.url}`);
+      assert.equal(page.loading, false);
+    } finally {
+      b.tabSession.clearStorageData = realClear;
+    }
+
+    // Still on the same page, it reloads as before.
+    const page = tabs.active;
+    let reloaded = false;
+    page.view.webContents.once('did-start-loading', () => { reloaded = true; });
+    await shellEval('window.tern.clearSiteData()');
+    await waitFor(() => reloaded && !page.loading, 4000);
+    assert.ok(page.url.includes('moved-on=1'));
   });
 
   const readerHtml = () => Buffer.from(tab.readerView.webContents.getURL().split('base64,')[1], 'base64').toString('utf8');
