@@ -351,7 +351,10 @@ function makeTab(tab) {
     e.dataTransfer.setData('text/tern-tab', String(tab.id));
     el.classList.add('dragging');
   });
-  el.addEventListener('dragend', () => el.classList.remove('dragging'));
+  el.addEventListener('dragend', (e) => {
+    el.classList.remove('dragging');
+    if (e.dataTransfer?.dropEffect === 'none') api.dragOut(tab.id, e.screenX, e.screenY);
+  });
   el.addEventListener('dragover', (e) => e.preventDefault());
   el.addEventListener('drop', (e) => {
     e.preventDefault();
@@ -1505,6 +1508,9 @@ const PALETTE_THEMES = THEMES.map(([id, label]) => [`Theme: ${label}`, () => api
 const PALETTE_ACTIONS = [
   ['New tab', () => api.newTab()],
   ['New Tor tab', () => api.newTorTab()],
+  ['New window', () => api.runAction('newWindow')],
+  ['Move tab to new window', () => api.runAction('moveToNewWindow')],
+  ['Close window', () => api.runAction('closeWindow')],
   ['Reopen closed tab', () => api.runAction('reopen')],
   ['Duplicate tab', () => api.runAction('duplicate')],
   ['Pin or unpin tab', () => api.runAction('pin')],

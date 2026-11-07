@@ -155,6 +155,7 @@ to `THEMES` in both `src/shell/shell.js` and `src/main/settings.js`.
 | Keys | Action |
 | --- | --- |
 | Ctrl+T / Ctrl+W | New tab / close tab |
+| Ctrl+N / Ctrl+Shift+W | New window / close window |
 | Ctrl+Shift+N | New Tor tab |
 | Ctrl+Shift+T | Reopen closed tab |
 | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous tab |
@@ -175,7 +176,7 @@ to `THEMES` in both `src/shell/shell.js` and `src/main/settings.js`.
 
 ## Known limits
 
-- No sync or password manager yet, and only one window at a time.
+- No sync or password manager yet.
 - There's no spell check yet.
 - History keeps the last 90 days, up to 5,000 pages. There's no private window yet.
 - Downloads can't be picked up again after Tern is closed.

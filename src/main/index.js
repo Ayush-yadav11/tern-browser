@@ -15,11 +15,7 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   let browser = null;
   app.on('second-instance', (_e, argv) => {
-    if (!browser) return;
-    if (browser.win.isMinimized()) browser.win.restore();
-    browser.win.focus();
-    const url = urlFromArgs(argv);
-    if (url) browser.tabs.create(url);
+    browser?.openFromOutside(urlFromArgs(argv));
   });
   app.on('window-all-closed', () => app.quit());
   start({ openUrl: urlFromArgs(process.argv) })

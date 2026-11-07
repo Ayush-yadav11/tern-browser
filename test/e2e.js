@@ -2002,6 +2002,296 @@ async function main() {
     assert.deepEqual(found, []);
   });
 
+  // Only compared with what the proxy setting says. Nothing connects to it here.
+  const socksTestPort = 59123;
+  const stateOf = (w, code) => w.shell.executeJavaScript(code, true);
+  const closeExtraWindows = async () => {
+    for (const w of b.windows()) if (w.win !== win) w.win.close();
+    await waitFor(() => b.windows().length === 1, 4000);
+  };
+  const windowOf = (tabs2) => b.windows().find((w) => w.tabs === tabs2);
+  const pressIn = (contents, keyCode, modifiers) => {
+    contents.sendInputEvent({ type: 'keyDown', keyCode, modifiers });
+    contents.sendInputEvent({ type: 'keyUp', keyCode, modifiers });
+  };
+
+  await check('windows: Ctrl+N opens another window with its own tabs, and settings and bookmarks reach both', async () => {
+    await closeExtraWindows();
+    const main = b.windows()[0];
+    const home = tabs.active.id;
+    const tabCount = tabs.tabs.length;
+    const page = await load(`${base}/window-main`);
+    page.view.webContents.focus();
+    await waitFor(() => page.view.webContents.isFocused(), 2000);
+    pressIn(page.view.webContents, 'n', ['control']);
+    await waitFor(() => b.windows().length === 2, 5000);
+    const other = b.windows()[1];
+    await waitFor(() => stateOf(other, 'state?.tabs.length === 1'), 5000);
+    assert.equal(tabs.tabs.length, tabCount, 'the first window gained nothing');
+    assert.equal(other.win.isVisible(), true);
+    assert.notDeepEqual(other.win.getBounds(), win.getBounds(), 'it does not sit exactly on top');
+
+    other.tabs.navigate(other.tabs.active.id, `${base}/window-other`);
+    await waitFor(() => other.tabs.active.view && !other.tabs.active.loading, 5000);
+    await waitFor(() => stateOf(other, `state.tabs[0].url.endsWith('/window-other')`), 3000);
+    assert.equal(await stateOf(main, `state.tabs.some((t) => t.url.endsWith('/window-other'))`), false);
+
+    // The interface in the second window really drives the second window.
+    await stateOf(other, 'window.tern.newTab()');
+    await waitFor(() => other.tabs.tabs.length === 2, 3000);
+    assert.equal(tabs.tabs.length, tabCount);
+
+    const theme = await stateOf(main, 'document.body.dataset.theme');
+    b.updateSettings({ theme: 'lagoon' });
+    await waitFor(async () => (await stateOf(other, 'document.body.dataset.theme')) === 'lagoon' && (await stateOf(main, 'document.body.dataset.theme')) === 'lagoon', 3000);
+    b.updateSettings({ theme });
+
+    const added = b.library.toggleBookmark({ url: `${base}/both-windows`, title: 'In both' });
+    await waitFor(() => stateOf(other, `bookmarks.some((x) => x.url.endsWith('/both-windows'))`), 3000);
+    b.library.removeBookmark(added.id);
+    await closeExtraWindows();
+    tabs.activate(home);
+  });
+
+  await check('windows: closing one leaves no processes behind, and Ctrl+Shift+T brings it back', async () => {
+    await closeExtraWindows();
+    const { webContents } = require('electron');
+    await sleep(600); // The last window's pages finish closing just after it does.
+    const before = webContents.getAllWebContents().filter((c) => !c.isDestroyed()).length;
+    const other = await b.openWindow({ url: `${base}/window-closes` });
+    await waitFor(() => other.tabs.active.view && !other.tabs.active.loading, 5000);
+    assert.ok(webContents.getAllWebContents().length >= before + 2, 'an interface and a page');
+    other.tabs.create(`${base}/window-closes-2`);
+    await waitFor(() => other.tabs.active.view && !other.tabs.active.loading, 5000);
+    const { x } = other.win.getNormalBounds();
+    other.win.close();
+    await waitFor(() => b.windows().length === 1, 4000);
+    await waitFor(() => webContents.getAllWebContents().filter((c) => !c.isDestroyed()).length === before, 4000);
+    assert.equal(tabs.closed.at(-1).window.tabs.length, 2);
+
+    tabs.reopenClosed();
+    await waitFor(() => b.windows().length === 2, 5000);
+    const back = b.windows()[1];
+    await waitFor(() => back.tabs.tabs.length === 2 && back.tabs.active?.view && !back.tabs.active.loading, 5000);
+    assert.deepEqual(back.tabs.tabs.map((t) => new URL(t.url).pathname), ['/window-closes', '/window-closes-2']);
+    assert.equal(back.win.getNormalBounds().x, x, 'in the same place');
+    await closeExtraWindows();
+    tabs.closed.pop();
+  });
+
+  await check('windows: moving a tab keeps its page running, and it then answers to its new window', async () => {
+    await closeExtraWindows();
+    const main = windowOf(tabs);
+    const home = tabs.active.id;
+    const tabCount = tabs.tabs.length;
+    const moving = tabs.create(`${base}/window-move`);
+    await waitFor(() => moving.view && !moving.loading, 5000);
+    const contents = moving.view.webContents;
+    await contents.executeJavaScript('window.stillTheSamePage = 42; document.title = "Moving"');
+    tabs.newGroup(moving.id);
+    assert.ok(moving.group);
+
+    const target = await b.moveTab(main, moving.id);
+    assert.ok(target && target !== main);
+    assert.equal(tabs.byId(moving.id), null, 'it left the first window');
+    assert.equal(tabs.tabs.length, tabCount);
+    assert.equal(tabs.groups.some((g) => g.id === moving.group), false);
+    assert.equal(target.tabs.byId(moving.id), moving);
+    assert.equal(moving.group, null);
+    assert.equal(moving.view.webContents, contents, 'the same page, not a reload');
+    assert.equal(await contents.executeJavaScript('window.stillTheSamePage'), 42);
+    assert.ok(target.win.contentView.children.includes(moving.view));
+    assert.ok(!win.contentView.children.includes(moving.view));
+    await waitFor(() => stateOf(target, `state?.tabs.length === 1 && state.tabs[0].id === ${moving.id}`), 3000);
+    await waitFor(() => { const { width } = moving.view.getBounds(); return width > 300; }, 3000);
+
+    // Page events and shortcuts now belong to the new window.
+    await contents.executeJavaScript('document.title = "Moved"');
+    await waitFor(() => stateOf(target, `state.tabs[0].title === 'Moved'`), 3000);
+    assert.equal(await stateOf(main, `state.tabs.some((t) => t.title === 'Moved')`), false);
+    contents.focus();
+    await waitFor(() => contents.isFocused(), 2000);
+    pressIn(contents, 't', ['control']);
+    await waitFor(() => target.tabs.tabs.length === 2, 3000);
+    assert.equal(tabs.tabs.length, tabCount);
+    target.tabs.close(target.tabs.active.id);
+    await waitFor(() => target.tabs.tabs.length === 1, 3000);
+
+    // A window's only tab can go to another window, and that window then closes.
+    const back = await b.moveTab(target, moving.id, main);
+    assert.equal(back, main);
+    await waitFor(() => b.windows().length === 1, 4000);
+    assert.equal(tabs.byId(moving.id), moving);
+    assert.equal(moving.view.webContents, contents);
+    assert.equal(await contents.executeJavaScript('window.stillTheSamePage'), 42);
+    tabs.close(moving.id);
+    tabs.activate(home);
+  });
+
+  await check('windows: a tab in a split can leave, and a lone tab has nowhere to go', async () => {
+    await closeExtraWindows();
+    const main = windowOf(tabs);
+    const home = tabs.active.id;
+    const left = tabs.create(`${base}/split-left`);
+    await waitFor(() => left.view && !left.loading, 5000);
+    tabs.startSplit(left.id);
+    const right = tabs.active;
+    tabs.navigate(right.id, `${base}/split-right`);
+    await waitFor(() => right.view && !right.loading, 5000);
+    const target = await b.moveTab(main, right.id);
+    assert.equal(tabs.splits.length, 0);
+    assert.equal(tabs.activeId, left.id, 'the partner takes over');
+    assert.ok(left.view.getBounds().width > 300);
+    assert.ok(win.contentView.children.includes(left.view));
+    assert.equal(await b.moveTab(target, right.id), null, 'moving its only tab to a new window does nothing');
+    assert.equal(b.windows().length, 2);
+    await closeExtraWindows();
+    tabs.close(left.id);
+    tabs.activate(home);
+  });
+
+  await check('windows: dropping a tab outside the window moves it, and inside does nothing', async () => {
+    await closeExtraWindows();
+    const home = tabs.active.id;
+    const dragged = tabs.create(`${base}/window-drag`);
+    await waitFor(() => dragged.view && !dragged.loading, 5000);
+    const drag = (x, y) => shellEval(`(() => {
+      const el = tabEls.get(${dragged.id});
+      el.dispatchEvent(new DragEvent('dragend', { bubbles: true, screenX: ${x}, screenY: ${y}, dataTransfer: new DataTransfer() }));
+    })()`);
+    const bounds = win.getBounds();
+    await drag(bounds.x + 200, bounds.y + 200);
+    await sleep(500);
+    assert.equal(b.windows().length, 1, 'inside the window');
+    await drag(bounds.x + bounds.width + 400, bounds.y + 100);
+    await waitFor(() => b.windows().length === 2 && b.windows()[1].tabs.byId(dragged.id), 5000);
+    const at = b.windows()[1].win.getBounds();
+    assert.equal(at.x, bounds.x + bounds.width + 300, 'it opens where it was dropped');
+    assert.equal(tabs.byId(dragged.id), null);
+    await closeExtraWindows();
+    tabs.activate(home);
+  });
+
+  await check('windows: menus offer new window and moving tabs', async () => {
+    await closeExtraWindows();
+    const other = await b.openWindow();
+    const labelsOf = (items) => items.map((i) => i.label);
+    assert.ok(labelsOf(b.mainMenuItems()).includes('New window'));
+    assert.equal(b.mainMenuItems().find((i) => i.label === 'Close window').enabled, true);
+    const lone = other.tabs.tabMenuItems(other.tabs.active);
+    assert.equal(lone.find((i) => i.label === 'Move to new window').enabled, false);
+    const choices = lone.find((i) => i.label === 'Move to window').submenu;
+    assert.equal(choices.length, 1);
+    await closeExtraWindows();
+    const items = tabs.tabMenuItems(tabs.active);
+    assert.equal(items.some((i) => i.label === 'Move to window'), false);
+    assert.equal(b.mainMenuItems().find((i) => i.label === 'Close window').enabled, false);
+    const linkMenu = tabs.contextItems(tabs.active, tabs.active.view?.webContents ?? { navigationHistory: { canGoBack: () => false, canGoForward: () => false } }, { linkURL: 'https://example.com/', x: 0, y: 0 });
+    assert.ok(labelsOf(linkMenu).includes('Open link in new window'));
+  });
+
+  await check('windows: closing the last tab of one of several closes that window, not the browser', async () => {
+    await closeExtraWindows();
+    const other = await b.openWindow();
+    other.tabs.close(other.tabs.active.id);
+    await waitFor(() => b.windows().length === 1, 4000);
+    assert.equal(b.windows()[0].win, win);
+    assert.ok(tabs.tabs.length >= 1);
+    const only = tabs.create();
+    const others = tabs.tabs.filter((t) => t !== only);
+    assert.ok(others.length >= 1);
+    tabs.close(only.id);
+  });
+
+  await check('windows: Tor carries on until the last Tor tab in any window closes, and fails closed after', async () => {
+    await closeExtraWindows();
+    const proxyOf = () => b.torSession.resolveProxy('https://example.com/');
+    await b.useTorPort(socksTestPort);
+    assert.ok((await proxyOf()).includes(String(socksTestPort)));
+    const main = windowOf(tabs);
+    const home = tabs.active.id;
+    const firstTor = tabs.create('', { tor: true });
+    const other = await b.openWindow();
+    assert.equal(other.tabs.torReady, true, 'a new window knows Tor is connected');
+    const secondTor = other.tabs.create('', { tor: true });
+
+    // Tor tabs stay Tor tabs when they move, and windows of nothing else aren't saved.
+    const moved = main.tabs.create(`${base}/tor-must-not-see`, { tor: true });
+    const target = await b.moveTab(main, moved.id, other);
+    assert.equal(target, other);
+    assert.equal(moved.tor, true);
+    other.tabs.close(moved.id);
+
+    other.tabs.close(other.tabs.tabs.find((t) => !t.tor).id);
+    b.flushAll();
+    const saved = JSON.parse(fs.readFileSync(path.join(profile, 'session.json'), 'utf8'));
+    assert.equal(saved.windows.length, 1, 'a window holding only Tor tabs leaves no trace');
+    assert.equal(JSON.stringify(saved).includes('tor-must-not-see'), false);
+
+    // Closing a window with a Tor tab in it isn't the end while another Tor tab is open.
+    other.win.close();
+    await waitFor(() => b.windows().length === 1, 4000);
+    assert.ok((await proxyOf()).includes(String(socksTestPort)), 'still using Tor');
+    assert.equal(tabs.torReady, true);
+    assert.equal(secondTor.view, null);
+
+    tabs.close(firstTor.id);
+    await waitFor(async () => (await proxyOf()).includes('127.0.0.1:1;') || (await proxyOf()).endsWith('127.0.0.1:1'), 3000);
+    assert.equal(tabs.torReady, false, 'fails closed');
+    tabs.activate(home);
+    assert.ok(tabs.byId(home));
+  });
+
+  await check('windows: closing the last Tor tab by closing its window also fails closed', async () => {
+    await closeExtraWindows();
+    const proxyOf = () => b.torSession.resolveProxy('https://example.com/');
+    await b.useTorPort(socksTestPort);
+    const other = await b.openWindow();
+    other.tabs.create('', { tor: true });
+    other.win.close();
+    await waitFor(() => b.windows().length === 1, 4000);
+    await waitFor(async () => (await proxyOf()).includes('127.0.0.1:1;') || (await proxyOf()).endsWith('127.0.0.1:1'), 3000);
+    assert.equal(tabs.torReady, false);
+  });
+
+  await check('windows: saved groups come back, including after a tab with no group', async () => {
+    await closeExtraWindows();
+    const other = await b.openWindow({
+      saved: {
+        activeIndex: 2,
+        groups: [{ id: 7, name: 'Second', color: 'red', collapsed: false }, { id: 3, name: 'First', color: 'teal', collapsed: true }, { id: -1, name: 'Bad' }],
+        tabs: [
+          { url: `${base}/restore-plain`, title: 'Plain' },
+          { url: `${base}/restore-a`, title: 'A', group: 3 },
+          { url: `${base}/restore-b`, title: 'B', group: 7 },
+          { url: `${base}/restore-c`, title: 'C', group: 99 },
+        ],
+      },
+    });
+    assert.deepEqual(other.tabs.groups.map((g) => g.name).sort(), ['First', 'Second']);
+    assert.deepEqual(other.tabs.tabs.map((t) => t.group), [null, 3, 7, null]);
+    assert.equal(other.tabs.groups.find((g) => g.id === 3).collapsed, true);
+    assert.equal(other.tabs.active.title, 'B');
+    const newGroup = other.tabs.newGroup(other.tabs.tabs[0].id);
+    assert.ok(newGroup.id > 7, 'new groups never reuse a saved number');
+    await closeExtraWindows();
+    tabs.closed.pop();
+  });
+
+  await check('windows: the session file lists each open window with its tabs and place', async () => {
+    await closeExtraWindows();
+    const other = await b.openWindow({ url: `${base}/saved-window` });
+    await waitFor(() => other.tabs.active.view && !other.tabs.active.loading, 5000);
+    b.flushAll();
+    const saved = JSON.parse(fs.readFileSync(path.join(profile, 'session.json'), 'utf8'));
+    assert.equal(saved.windows.length, 2);
+    assert.ok(saved.windows[1].tabs.some((t) => t.url.endsWith('/saved-window')));
+    assert.ok(Number.isInteger(saved.windows[1].bounds.width));
+    await closeExtraWindows();
+    b.flushAll();
+    assert.equal(JSON.parse(fs.readFileSync(path.join(profile, 'session.json'), 'utf8')).windows.length, 1);
+  });
+
   console.log(`\nStartup to ready window: ${startMs} ms`);
   console.log(`Memory with one empty new tab: ${idleMemory}`);
   console.log(`Memory with one simple page:   ${pageMemory}`);

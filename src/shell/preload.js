@@ -57,6 +57,7 @@ contextBridge.exposeInMainWorld('tern', {
   forgetSite: invoke('tern:site-forget'),
   allowHttp: invoke('tern:allow-http'),
   runAction: invoke('tern:run-action'),
+  dragOut: invoke('tern:drag-out'),
   onPaletteOpen: listen('tern:palette-open'),
   setSideOpen: invoke('tern:side-open'),
   mainMenu: invoke('tern:main-menu'),

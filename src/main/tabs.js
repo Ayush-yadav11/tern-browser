@@ -18,10 +18,13 @@ const SPLIT_BAR = 2;
 const SPLIT_MIN = 0.2;
 const SPLIT_MAX = 0.8;
 
+// Shared by every window, so a tab keeps its number when it moves to another one.
+let nextTabId = 1;
+
 // A tab only owns a renderer while it is awake. New tabs and sleeping tabs have
 // view === null, and the shell draws whatever belongs in the content area instead.
 class Tabs extends EventEmitter {
-  constructor({ window, session, torSession, onShortcut, getSleepMinutes, getWebRtcPolicy, getSearchUrl, getHttpsOnly, getStripTracking, getSiteZoom, getReaderText }) {
+  constructor({ window, session, torSession, closed = [], httpAllowed = new Set(), getOtherWindows = () => [], onShortcut, getSleepMinutes, getWebRtcPolicy, getSearchUrl, getHttpsOnly, getStripTracking, getSiteZoom, getReaderText }) {
     super();
     this.window = window;
     this.session = session;
@@ -35,17 +38,17 @@ class Tabs extends EventEmitter {
     this.getStripTracking = getStripTracking;
     this.getSiteZoom = getSiteZoom;
     this.getReaderText = getReaderText;
+    this.getOtherWindows = getOtherWindows;
     // Sites allowed to stay on http until Tern closes. Tor tabs keep their own list.
-    this.httpAllowed = new Set();
+    this.httpAllowed = httpAllowed;
     this.httpsWaitMs = HTTPS_WAIT_MS;
     this.tabs = [];
     this.groups = [];
     this.splits = [];
     this.nextGroupId = 1;
     this.activeId = null;
-    this.nextId = 1;
     this.bounds = { x: 0, y: 0, width: 0, height: 0 };
-    this.closed = [];
+    this.closed = closed;
     this.fullscreen = false;
     this.sleepTimer = setInterval(() => this.sleepIdle(), 60 * 1000);
     this.sleepTimer.unref?.();
@@ -98,12 +101,13 @@ class Tabs extends EventEmitter {
 
   create(url = '', { activate = true, title = '', index, openedByPage = false, tor = false, pinned = false, group = null } = {}) {
     const tab = {
+      owner: this,
       openedByPage,
       tor,
       pinned,
       group: tor || pinned ? null : group,
       muted: false,
-      id: this.nextId++,
+      id: nextTabId++,
       url: isWebUrl(url) ? url : '',
       title,
       favicon: '',
@@ -251,7 +255,7 @@ class Tabs extends EventEmitter {
     tab.upgradeTimer = setTimeout(() => {
       if (tab.upgrade !== upgrade) return;
       tab.view?.webContents.stop();
-      this.showNoHttps(tab, 0, 'The secure version of this site did not respond.');
+      tab.owner.showNoHttps(tab, 0, 'The secure version of this site did not respond.');
     }, tab.tor ? Math.max(this.httpsWaitMs, HTTPS_WAIT_TOR_MS) : this.httpsWaitMs);
     tab.upgradeTimer.unref?.();
   }
@@ -358,7 +362,41 @@ class Tabs extends EventEmitter {
 
   reopenClosed() {
     const last = this.closed.pop();
-    if (last) this.create(last.url, { title: last.title, index: Math.min(last.index, this.tabs.length) });
+    if (last?.window) this.emit('reopen-window', last.window);
+    else if (last) this.create(last.url, { title: last.title, index: Math.min(last.index, this.tabs.length) });
+  }
+
+  // Hands a tab to another window with its page still running. It leaves its group and any
+  // split behind, because those belong to this window.
+  detach(id) {
+    const index = this.tabs.findIndex((t) => t.id === id);
+    if (index < 0) return null;
+    const tab = this.tabs[index];
+    const partner = this.partnerOf(tab);
+    this.splits = this.splits.filter((s) => s !== this.splitFor(tab));
+    if (tab.view) this.window.contentView.removeChildView(tab.view);
+    if (tab.readerView) this.window.contentView.removeChildView(tab.readerView);
+    this.tabs.splice(index, 1);
+    tab.group = null;
+    this.keepPinnedFirst();
+    if (this.activeId === id) {
+      this.activeId = null;
+      const next = partner ?? this.tabs[Math.min(index, this.tabs.length - 1)];
+      if (next) this.activate(next.id);
+      else this.changed();
+    } else {
+      this.layoutPages();
+      this.changed();
+    }
+    return tab;
+  }
+
+  adopt(tab) {
+    tab.owner = this;
+    this.tabs.push(tab);
+    this.keepPinnedFirst();
+    this.activate(tab.id);
+    this.contentsFor(tab)?.focus();
   }
 
   move(id, toIndex) {
@@ -592,7 +630,7 @@ class Tabs extends EventEmitter {
       clearTimeout(tab.readerNoteTimer);
       tab.readerNoteTimer = setTimeout(() => {
         tab.readerNote = '';
-        this.changed();
+        tab.owner.changed();
       }, 4000);
       tab.readerNoteTimer.unref?.();
       this.changed();
@@ -607,7 +645,7 @@ class Tabs extends EventEmitter {
   async openReader(tab, article) {
     const view = new WebContentsView({
       webPreferences: {
-        session: tab.tor ? this.torSession : this.session,
+        session: tab.tor ? tab.owner.torSession : tab.owner.session,
         sandbox: true,
         contextIsolation: true,
         nodeIntegration: false,
@@ -619,41 +657,41 @@ class Tabs extends EventEmitter {
     const wc = view.webContents;
     wc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
     wc.setWindowOpenHandler(({ url }) => {
-      if (isWebUrl(url)) this.create(url, { tor: tab.tor });
+      if (isWebUrl(url)) tab.owner.create(url, { tor: tab.tor });
       return { action: 'deny' };
     });
     wc.on('will-navigate', (event, url) => {
       event.preventDefault();
-      if (isWebUrl(url)) this.navigate(tab.id, url);
+      if (isWebUrl(url)) tab.owner.navigate(tab.id, url);
     });
     wc.on('before-input-event', (event, input) => {
       if (input.type === 'keyDown' && input.key === 'Escape') {
         event.preventDefault();
-        this.closeReader(tab);
+        tab.owner.closeReader(tab);
         tab.view?.webContents.focus();
-        this.changed();
-      } else if (this.onShortcut(input)) {
+        tab.owner.changed();
+      } else if (tab.owner.onShortcut(input)) {
         event.preventDefault();
       }
     });
-    wc.on('found-in-page', (_e, result) => this.emit('found', result));
+    wc.on('found-in-page', (_e, result) => tab.owner.emit('found', result));
     wc.on('context-menu', (_e, p) => {
       const items = [
         ...(p.selectionText ? [{ role: 'copy' }, { type: 'separator' }] : []),
         ...(isWebUrl(p.linkURL) ? [{ label: 'Copy link address', click: () => clipboard.writeText(p.linkURL) }, { type: 'separator' }] : []),
         { label: 'Print…', click: () => wc.print({}, () => {}) },
-        { label: 'Exit reader view', click: () => this.toggleReader(tab.id) },
+        { label: 'Exit reader view', click: () => tab.owner.toggleReader(tab.id) },
       ];
-      Menu.buildFromTemplate(items).popup({ window: this.window });
+      Menu.buildFromTemplate(items).popup({ window: tab.owner.window });
     });
     tab.readerView = view;
-    view.setBounds(this.boundsFor(tab));
-    if (this.visibleTabs().includes(tab)) this.window.contentView.addChildView(view);
-    this.emit('attached');
+    view.setBounds(tab.owner.boundsFor(tab));
+    if (tab.owner.visibleTabs().includes(tab)) tab.owner.window.contentView.addChildView(view);
+    tab.owner.emit('attached');
     await wc.loadURL(readerPage(article, { pageUrl: tab.url })).catch(() => {});
     if (tab.readerView === view) {
-      await this.styleReader(tab);
-      if (tab.id === this.activeId) wc.focus();
+      await tab.owner.styleReader(tab);
+      if (tab.id === tab.owner.activeId) wc.focus();
     }
   }
 
@@ -715,9 +753,19 @@ class Tabs extends EventEmitter {
         }] : []),
         { type: 'separator' },
       ];
+    const otherWindows = this.getOtherWindows();
+    const moving = [
+      { label: 'Move to new window', enabled: this.tabs.length > 1, click: () => this.emit('move-to-window', tab.id, null) },
+      ...(otherWindows.length ? [{
+        label: 'Move to window',
+        submenu: otherWindows.map((w) => ({ label: w.title.slice(0, 60), click: () => this.emit('move-to-window', tab.id, w.id) })),
+      }] : []),
+      { type: 'separator' },
+    ];
     return [
       ...grouping,
       ...splitting,
+      ...moving,
       { label: 'Reload', enabled: Boolean(tab.url), click: () => this.reload(tab.id) },
       { label: 'Duplicate', enabled: Boolean(tab.url), click: () => this.duplicate(tab.id) },
       { label: tab.pinned ? 'Unpin' : 'Pin', click: () => this.togglePinned(tab.id) },
@@ -873,24 +921,24 @@ class Tabs extends EventEmitter {
   }
 
   wire(tab, wc) {
-    const update = () => this.changed();
+    const update = () => tab.owner.changed();
     const isCurrent = () => tab.view?.webContents === wc;
 
     wc.setWindowOpenHandler(({ url, disposition }) => {
-      if (isWebUrl(url)) this.create(url, { activate: disposition !== 'background-tab', openedByPage: true, tor: tab.tor, group: tab.group });
+      if (isWebUrl(url)) tab.owner.create(url, { activate: disposition !== 'background-tab', openedByPage: true, tor: tab.tor, group: tab.group });
       return { action: 'deny' };
     });
     const followSecurely = (event, url) => {
       event.preventDefault();
-      const target = this.secureUrl(tab, url);
+      const target = tab.owner.secureUrl(tab, url);
       tab.url = target;
       tab.lastFollowed = target;
-      this.watchUpgrade(tab);
+      tab.owner.watchUpgrade(tab);
       wc.loadURL(target).catch(() => {});
     };
     wc.on('will-navigate', (event, url) => {
       if (!isWebUrl(url)) event.preventDefault();
-      else if (this.secureUrl(tab, url) !== url) followSecurely(event, url);
+      else if (tab.owner.secureUrl(tab, url) !== url) followSecurely(event, url);
       else tab.upgrade = null;
     });
     wc.on('will-redirect', (event, url) => {
@@ -900,16 +948,16 @@ class Tabs extends EventEmitter {
         return;
       }
       // A site that insists on its own tracking parameters gets them, rather than a loop.
-      if (this.getStripTracking() && stripTracking(url) === tab.lastFollowed) return;
+      if (tab.owner.getStripTracking() && stripTracking(url) === tab.lastFollowed) return;
       // A site sending its secure address back to http would otherwise bounce forever.
       if (url.startsWith('http:') && tab.upgrade && tab.upgrade.host === hostOf(url)) {
         event.preventDefault();
         wc.stop();
-        this.showNoHttps(tab, 0, 'This site only offers an unencrypted connection.');
+        tab.owner.showNoHttps(tab, 0, 'This site only offers an unencrypted connection.');
         return;
       }
       const pending = tab.upgrade;
-      if (this.secureUrl(tab, url) !== url) followSecurely(event, url);
+      if (tab.owner.secureUrl(tab, url) !== url) followSecurely(event, url);
       else tab.upgrade = pending;
     });
     wc.on('will-frame-navigate', (event) => {
@@ -918,16 +966,16 @@ class Tabs extends EventEmitter {
 
     // Clicking into the other side of a split makes it the active tab.
     wc.on('focus', () => {
-      if (tab.id !== this.activeId && this.visibleTabs().includes(tab)) this.activate(tab.id);
+      if (tab.id !== tab.owner.activeId && tab.owner.visibleTabs().includes(tab)) tab.owner.activate(tab.id);
     });
     wc.on('did-start-navigation', (details) => {
       if (!details.isMainFrame || details.isSameDocument) return;
-      this.closeReader(tab);
+      tab.owner.closeReader(tab);
       tab.error = null;
       tab.blockedBefore = tab.blocked;
       tab.blocked = 0;
       if (isWebUrl(details.url)) tab.url = details.url;
-      this.attach(tab);
+      tab.owner.attach(tab);
       update();
     });
     wc.on('did-navigate', (_e, url) => {
@@ -938,8 +986,8 @@ class Tabs extends EventEmitter {
         tab.faviconHost = hostOf(url);
         tab.url = url;
         if (!tab.tor) {
-          this.emit('visit', url, '');
-          const level = this.getSiteZoom(hostOf(url));
+          tab.owner.emit('visit', url, '');
+          const level = tab.owner.getSiteZoom(hostOf(url));
           if (wc.getZoomLevel() !== level) wc.setZoomLevel(level);
         }
       }
@@ -948,12 +996,12 @@ class Tabs extends EventEmitter {
     wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {
       if (isMainFrame && isWebUrl(url)) {
         tab.url = url;
-        this.emit('page-loaded', tab, wc);
-        if (!tab.tor) this.emit('visit', url, '');
+        tab.owner.emit('page-loaded', tab, wc);
+        if (!tab.tor) tab.owner.emit('visit', url, '');
       }
       update();
     });
-    wc.on('did-finish-load', () => this.emit('page-loaded', tab, wc));
+    wc.on('did-finish-load', () => tab.owner.emit('page-loaded', tab, wc));
     wc.on('did-start-loading', () => {
       tab.loading = true;
       update();
@@ -964,7 +1012,7 @@ class Tabs extends EventEmitter {
     });
     wc.on('page-title-updated', (_e, title) => {
       tab.title = title;
-      if (!tab.tor) this.emit('title', tab.url, title);
+      if (!tab.tor) tab.owner.emit('title', tab.url, title);
       update();
     });
     wc.on('page-favicon-updated', (_e, favicons) => {
@@ -975,7 +1023,7 @@ class Tabs extends EventEmitter {
     wc.on('media-started-playing', update);
     wc.on('audio-state-changed', update);
     wc.on('zoom-changed', (_e, direction) => {
-      this.setZoom(tab, wc.getZoomLevel() + (direction === 'in' ? 0.5 : -0.5));
+      tab.owner.setZoom(tab, wc.getZoomLevel() + (direction === 'in' ? 0.5 : -0.5));
     });
     wc.on('media-paused', update);
 
@@ -983,28 +1031,28 @@ class Tabs extends EventEmitter {
       // -3 is an aborted navigation, which also fires when the user stops or moves on.
       if (!isMainFrame || code === -3 || !isCurrent()) return;
       if (tab.upgrade && !NOT_AN_HTTPS_PROBLEM.has(code)) {
-        this.showNoHttps(tab, code, description);
+        tab.owner.showNoHttps(tab, code, description);
         return;
       }
       tab.error = { code, description, url };
       if (isWebUrl(url)) tab.url = url;
-      this.attach(tab);
+      tab.owner.attach(tab);
       update();
     });
     wc.on('render-process-gone', (_e, details) => {
       if (details.reason === 'clean-exit' || !isCurrent()) return;
       tab.error = { code: 0, description: `This page crashed (${details.reason}).`, url: tab.url };
-      this.attach(tab);
+      tab.owner.attach(tab);
       update();
     });
 
-    wc.on('enter-html-full-screen', () => this.setFullscreen(tab, true));
-    wc.on('leave-html-full-screen', () => this.setFullscreen(tab, false));
+    wc.on('enter-html-full-screen', () => tab.owner.setFullscreen(tab, true));
+    wc.on('leave-html-full-screen', () => tab.owner.setFullscreen(tab, false));
     wc.on('before-input-event', (event, input) => {
-      if (this.onShortcut(input)) event.preventDefault();
+      if (tab.owner.onShortcut(input)) event.preventDefault();
     });
-    wc.on('found-in-page', (_e, result) => this.emit('found', result));
-    wc.on('context-menu', (_e, params) => this.contextMenu(tab, wc, params));
+    wc.on('found-in-page', (_e, result) => tab.owner.emit('found', result));
+    wc.on('context-menu', (_e, params) => tab.owner.contextMenu(tab, wc, params));
   }
 
   setFullscreen(tab, on) {
@@ -1027,6 +1075,7 @@ class Tabs extends EventEmitter {
     if (isWebUrl(p.linkURL)) {
       items.push(
         { label: 'Open link in new tab', click: () => openInNewTab(p.linkURL) },
+        { label: 'Open link in new window', click: () => this.emit('open-in-window', p.linkURL, tab.tor) },
         { label: 'Save link as…', click: () => wc.downloadURL(p.linkURL) },
         { label: 'Copy link address', click: () => clipboard.writeText(p.linkURL) },
         ...(stripTracking(p.linkURL) !== p.linkURL
