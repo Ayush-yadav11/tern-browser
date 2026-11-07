@@ -9,6 +9,13 @@ Download `Tern-Setup-x.y.z.exe` from the [latest release](https://github.com/Ayu
 and run it. It installs for your Windows account only, without needing admin rights. Because the
 installer isn't code-signed yet, Windows SmartScreen may warn you: choose **More info**, then **Run anyway**.
 
+## Searching page text
+
+Off by default, because it stores what you read. Turn on "Search the text of visited pages" in Customize, and History
+search and the command palette can find words inside pages you've visited. The text stays in one file on this PC, for up
+to 90 days and 1,000 pages. It isn't encrypted, so anyone using your Windows account could read it. Tor tabs, local
+addresses and pages with password or card fields are skipped. Turning it off, or clearing history, deletes the text.
+
 ## Split view
 
 Right-click a tab and choose Split view with new tab, or pick another open tab, to see two pages side by side. Drag the
@@ -122,6 +129,7 @@ npm start
 | `src/page/youtube-preload.js` | Removes YouTube's ad data before the page reads it |
 | `src/main/flags.js` | Chromium switches that turn off AI features and background services |
 | `src/main/bookmarks-io.js` | Reads and writes bookmark files from other browsers |
+| `src/main/page-index.js` | Optional search of the text of visited pages |
 | `src/main/library.js` | Bookmarks, history and address bar matching |
 | `src/main/downloads.js` | Saving files, pause, resume, cancel, and the warning before opening programs |
 | `src/main/tor.js` | Runs Tor while Tor tabs are open |

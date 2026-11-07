@@ -15,6 +15,7 @@ const { SEARCH_SHORTCUTS, resolveInput, stripTracking } = require('../src/main/u
 const { clean } = require('../src/main/settings');
 const { isRisky } = require('../src/main/downloads');
 const { Library } = require('../src/main/library');
+const { PageIndex } = require('../src/main/page-index');
 const { findBrowsers, parseBookmarksHtml, parseChromiumBookmarks, toBookmarksHtml } = require('../src/main/bookmarks-io');
 
 const OUT = path.join(__dirname, 'output');
@@ -43,6 +44,9 @@ function serve() {
     if (req.url.startsWith('/ok.gif')) {
       res.writeHead(200, { 'content-type': 'image/png' });
       res.end(PNG);
+    } else if (req.url.startsWith('/login-form')) {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end('<!doctype html><title>Sign in</title><p>private-login-words</p><input type="password">');
     } else if (req.url.startsWith('/article')) {
       const paragraph = '<p>The quick brown tern flew over the lazy harbour, and everyone watching agreed it was a remarkable sight indeed, with plenty of words in every sentence for the reader to find.</p>';
       res.writeHead(200, { 'content-type': 'text/html' });
@@ -1235,6 +1239,18 @@ async function main() {
     assert.ok(!tabs.tabMenuItems(torTab).some((i) => i.label === 'Add to new group'));
   });
 
+  await check('Tor tab: page text is never kept', async () => {
+    const file = path.join(profile, 'page-text.jsonl');
+    b.updateSettings({ indexPages: true });
+    b.pageText.delayMs = 50;
+    tabs.navigate(torTab.id, 'http://tor-text.invalid/page');
+    await waitFor(() => torTab.view && !torTab.loading, 5000);
+    await sleep(300);
+    assert.equal(fs.existsSync(file) && fs.readFileSync(file, 'utf8').includes('tor-text'), false);
+    b.updateSettings({ indexPages: false });
+    b.pageText.delayMs = 1500;
+  });
+
   await check('Tor tab: zoom is not saved', async () => {
     const before = JSON.stringify(b.getSettings().siteZoom);
     tabs.activate(torTab.id);
@@ -1570,6 +1586,97 @@ async function main() {
     assert.deepEqual(b.importBookmarkFiles([good]), { added: 1, skipped: 0 });
     b.library.removeBookmark(b.library.bookmarks.at(-1).id);
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('page text index: finds words, keeps the newest copy, and survives a restart', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tern-pages-'));
+    const index = new PageIndex(dir);
+    index.add('https://a.example/', 'First', 'The migration of arctic terns covers an enormous distance every single year.');
+    index.add('https://b.example/', 'Second', 'Recipes for tomato soup and other things.');
+    assert.deepEqual(index.search('ARCTIC distance').map((p) => p.url), ['https://a.example/'], 'any case, all words');
+    assert.deepEqual(index.search('arctic soup'), []);
+    assert.ok(index.search('enormous')[0].snippet.includes('enormous'));
+    index.add('https://b.example/', 'Second', 'Now about bicycles instead.');
+    assert.deepEqual(index.search('tomato'), [], 'old text of a page goes');
+    assert.deepEqual(new PageIndex(dir).search('bicycles').map((p) => p.url), ['https://b.example/'], 'read back from disk');
+    index.remove('https://a.example/');
+    assert.deepEqual(new PageIndex(dir).search('arctic'), [], 'removed stays removed');
+    fs.appendFileSync(path.join(dir, 'page-text.jsonl'), '{ broken line\n"nope"\n');
+    assert.equal(new PageIndex(dir).search('bicycles').length, 1, 'a damaged line is skipped');
+    const old = new PageIndex(dir);
+    old.add('https://old.example/', 'Old', 'ancient words', Date.now() - 100 * 24 * 60 * 60 * 1000);
+    assert.deepEqual(new PageIndex(dir).search('ancient'), [], 'older than history keeps is dropped');
+    index.clear();
+    assert.equal(fs.existsSync(path.join(dir, 'page-text.jsonl')), false, 'clearing deletes the file');
+    assert.deepEqual(index.search('bicycles'), []);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('page text search: off by default, then finds visited pages from history search and the palette', async () => {
+    assert.equal(clean({}).indexPages, false, 'off until asked for');
+    const textFile = path.join(profile, 'page-text.jsonl');
+    b.pageText.delayMs = 100;
+    await load(`${base}/article?before-turned-on=1`);
+    await sleep(400);
+    assert.equal(fs.existsSync(textFile), false, 'nothing kept while off');
+
+    b.updateSettings({ indexPages: true });
+    await load(`${base}/article?indexed=1`);
+    await waitFor(() => b.pageIndex.search('remarkable sight').length > 0, 4000);
+    assert.ok(fs.existsSync(textFile));
+
+    await shellEval("showPanel('library', 'history')");
+    await inShell(() => {
+      const input = document.getElementById('library-search');
+      input.value = 'remarkable sight';
+      input.dispatchEvent(new Event('input'));
+    });
+    await waitFor(() => inShell(() => document.querySelector('#history-list .snippet')?.textContent.includes('remarkable sight')), 3000);
+    await shot(shell, '38-page-text-search');
+    await shellEval('togglePanel(openPanel)');
+
+    await shellEval('openPalette()');
+    await inShell(() => {
+      const input = document.getElementById('palette-input');
+      input.value = 'remarkable sight';
+      input.dispatchEvent(new Event('input'));
+    });
+    await waitFor(() => shellEval("paletteItems.some((i) => i.kind === 'In page')"), 3000);
+    await inShell(() => document.getElementById('palette-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
+  });
+
+  await check('page text search: skips password pages and local addresses, and removing from history removes the text', async () => {
+    await load(`${base}/login-form`);
+    await sleep(400);
+    assert.deepEqual(b.pageIndex.search('private-login-words'), [], 'pages asking for a password are skipped');
+    await load(`http://127.0.0.1:${server.address().port}/article?local=1`);
+    await sleep(400);
+    assert.deepEqual(b.pageIndex.search('remarkable').filter((p) => p.url.includes('local=1')), [], 'local addresses are skipped');
+
+    const url = `${base}/article?indexed=1`;
+    assert.ok(b.pageIndex.search('remarkable').some((p) => p.url === url));
+    await shellEval(`window.tern.removeHistory(${JSON.stringify(url)})`);
+    assert.ok(!b.pageIndex.search('remarkable').some((p) => p.url === url));
+  });
+
+  await check('page text search: clearing history or browsing data, or turning it off, deletes the text', async () => {
+    const textFile = path.join(profile, 'page-text.jsonl');
+    const again = async (tag) => {
+      await load(`${base}/article?${tag}=1`);
+      await waitFor(() => b.pageIndex.search('remarkable').length > 0, 4000);
+      assert.ok(fs.existsSync(textFile));
+    };
+    await again('a');
+    await shellEval('window.tern.clearHistory()');
+    assert.equal(fs.existsSync(textFile), false, 'clear history');
+    await again('b');
+    await shellEval('window.tern.clearBrowsingData()');
+    assert.equal(fs.existsSync(textFile), false, 'clear browsing data');
+    await again('c');
+    b.updateSettings({ indexPages: false });
+    assert.equal(fs.existsSync(textFile), false, 'turning it off');
+    assert.deepEqual(await shellEval("window.tern.searchPages('remarkable')"), []);
+    b.pageText.delayMs = 1500;
   });
 
   await check('library files: damaged data is ignored and unsafe addresses are dropped', () => {

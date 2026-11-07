@@ -110,6 +110,7 @@
           </div>
           <div id="history-area" hidden>
             <div id="history-list"></div>
+            <p id="history-text-hint" class="muted" hidden>Tip: turn on "Search the text of visited pages" in Customize to find words inside pages too.</p>
             <button id="history-clear" class="link" type="button">Clear all history</button>
           </div>
           <p id="library-empty" class="muted empty" hidden></p>
@@ -158,6 +159,7 @@
 
           <label class="row"><span>Bookmarks bar</span><input id="bookmarks-bar-toggle" type="checkbox" class="switch"></label>
           <label class="row"><span>Save browsing history</span><input id="save-history" type="checkbox" class="switch"></label>
+          <label class="row" title="Keeps the text of pages you visit in a file on this PC, so History search can find words inside them. Skips Tor tabs and pages with password or card fields. Turning this off deletes the saved text."><span>Search the text of visited pages</span><input id="index-pages" type="checkbox" class="switch"></label>
           <label class="row"><span>Ask where to save downloads</span><input id="ask-download" type="checkbox" class="switch"></label>
 
           <h3>Privacy</h3>

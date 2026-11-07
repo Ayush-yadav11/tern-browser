@@ -72,6 +72,7 @@ contextBridge.exposeInMainWorld('tern', {
   removeBookmark: invoke('tern:bookmark-remove'),
   moveBookmark: invoke('tern:bookmark-move'),
   searchHistory: invoke('tern:history-search'),
+  searchPages: invoke('tern:search-pages'),
   removeHistory: invoke('tern:history-remove'),
   clearHistory: invoke('tern:history-clear'),
   refreshDownloads: invoke('tern:downloads-refresh'),

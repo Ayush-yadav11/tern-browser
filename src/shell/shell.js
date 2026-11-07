@@ -1019,7 +1019,7 @@ function dayLabel(time) {
 async function refreshHistory() {
   renderLibrary.historyDirty = false;
   const query = $('library-search').value;
-  const entries = await api.searchHistory(query);
+  const [entries, inText] = await Promise.all([api.searchHistory(query), query.trim() ? api.searchPages(query) : []]);
   if (query !== $('library-search').value || libraryTab !== 'history') return;
   const list = $('history-list');
   list.textContent = '';
@@ -1039,8 +1039,21 @@ async function refreshHistory() {
     openFromList(row, entry.url);
     list.append(row);
   }
+  const shownUrls = new Set(entries.map((entry) => entry.url));
+  const textOnly = inText.filter((page) => !shownUrls.has(page.url));
+  if (textOnly.length) list.append(make('div', 'day', 'Found inside pages'));
+  for (const page of textOnly) {
+    const row = make('div', 'entry');
+    const main = make('div', 'entry-main');
+    main.append(make('span', 'entry-title', page.title || openHost(page.url)), make('span', 'entry-sub snippet', page.snippet));
+    row.title = page.url;
+    row.append(main);
+    openFromList(row, page.url);
+    list.append(row);
+  }
+  $('history-text-hint').hidden = !query.trim() || state.settings.indexPages;
   const empty = $('library-empty');
-  empty.hidden = entries.length > 0;
+  empty.hidden = entries.length + textOnly.length > 0;
   empty.textContent = query.trim() ? 'Nothing in your history matches that.' : 'Pages you visit will show up here.';
   $('history-clear').hidden = entries.length === 0 || Boolean(query.trim());
 }
@@ -1219,6 +1232,7 @@ function renderCustomize() {
   $('sleep').value = String(s.sleepMinutes);
   $('bookmarks-bar-toggle').checked = s.bookmarksBar;
   $('save-history').checked = s.saveHistory;
+  $('index-pages').checked = s.indexPages;
   $('ask-download').checked = s.askDownloadPath;
   $('auto-update').checked = s.autoUpdate;
   $('side-collapse').checked = s.sideCollapse;
@@ -1325,6 +1339,7 @@ function wirePanel() {
   });
   $('bookmarks-bar-toggle').addEventListener('change', (e) => api.setSettings({ bookmarksBar: e.target.checked }));
   $('save-history').addEventListener('change', (e) => api.setSettings({ saveHistory: e.target.checked }));
+  $('index-pages').addEventListener('change', (e) => api.setSettings({ indexPages: e.target.checked }));
   $('ask-download').addEventListener('change', (e) => api.setSettings({ askDownloadPath: e.target.checked }));
   $('auto-update').addEventListener('change', (e) => api.setSettings({ autoUpdate: e.target.checked }));
   $('update-check').addEventListener('click', () => api.checkForUpdate());
@@ -1550,8 +1565,11 @@ async function updatePalette() {
   if (!words.length) {
     rows = [...tabs, ...actions];
   } else {
-    const history = (await api.searchHistory(query)).slice(0, 12)
+    const [visited, inText] = await Promise.all([api.searchHistory(query), api.searchPages(query)]);
+    const history = visited.slice(0, 12)
       .map((h) => paletteRow('History', h.title || openHost(h.url), openHost(h.url), () => api.open(h.url, {})));
+    const textRows = inText.filter((page) => !visited.some((h) => h.url === page.url)).slice(0, 8)
+      .map((page) => paletteRow('In page', page.title || openHost(page.url), page.snippet, () => api.open(page.url, {})));
     if (token !== paletteToken) return;
     const seen = new Set();
     rows = [...tabs, ...marks, ...actions, ...history]
@@ -1559,6 +1577,7 @@ async function updatePalette() {
       .filter(({ score }) => score !== null)
       .sort((a, b) => (b.score + b.row.boost) - (a.score + a.row.boost))
       .map(({ row }) => row)
+      .concat(textRows)
       .filter((row) => {
         const key = `${row.main}|${row.sub}`;
         if (seen.has(key)) return false;

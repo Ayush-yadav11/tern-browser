@@ -7,12 +7,13 @@ const { applyFlags } = require('./flags');
 const { AdBlock } = require('./adblock');
 const { Downloads } = require('./downloads');
 const { Library } = require('./library');
+const { EXTRACT_TEXT, PageIndex } = require('./page-index');
 const { Tabs } = require('./tabs');
 const { Tor, torPath } = require('./tor');
 const { Updater } = require('./updater');
 const { findBrowsers, readBookmarksFile, toBookmarksHtml } = require('./bookmarks-io');
 const { DEFAULTS, PROXY_SERVER, clean, JsonFile } = require('./settings');
-const { SEARCH_ENGINES, SEARCH_SHORTCUTS, hostOf, isWebUrl, parseShortcut, resolveInput } = require('./url');
+const { SEARCH_ENGINES, SEARCH_SHORTCUTS, hostOf, isLocalHost, isWebUrl, parseShortcut, resolveInput } = require('./url');
 
 applyFlags(app);
 
@@ -165,6 +166,8 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
   const update = (patch) => {
     settings = clean(patch, settings);
     settingsFile.write(settings);
+    // Turning this off means the text goes too, not just that no more is collected.
+    if (patch.indexPages === false) pageIndex.clear();
     adblock.setEnabled(settings.adblock);
     pushState();
   };
@@ -332,6 +335,21 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
   });
 
   const library = new Library(profile);
+  const pageIndex = new PageIndex(profile);
+  const pageText = { delayMs: 1500, allowLocal: false };
+  // Waits for the page to settle, and checks again in case it moved on in the meantime.
+  tabs.on('page-loaded', (tab, contents) => {
+    if (tab.tor || !settings.indexPages || !settings.saveHistory) return;
+    clearTimeout(tab.pageTextTimer);
+    const { url } = tab;
+    tab.pageTextTimer = setTimeout(async () => {
+      if (contents.isDestroyed() || tab.tor || !settings.indexPages || tab.url !== url || tab.error) return;
+      if (!isWebUrl(url) || (isLocalHost(hostOf(url)) && !pageText.allowLocal)) return;
+      const text = await contents.executeJavaScriptInIsolatedWorld(1002, [{ code: EXTRACT_TEXT }]).catch(() => null);
+      if (text && settings.indexPages && tab.url === url) pageIndex.add(url, tab.title, text);
+    }, pageText.delayMs);
+    tab.pageTextTimer.unref?.();
+  });
   const importBookmarkFiles = (files) => {
     try {
       const entries = files.flatMap((file) => readBookmarksFile(file));
@@ -672,6 +690,7 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     // Clears normal tabs only. Bookmarks, settings and Tor tabs aren't touched.
     'tern:clear-browsing-data': async () => {
       library.clearHistory();
+      pageIndex.clear();
       await tabSession.clearStorageData();
       await tabSession.clearCache();
     },
@@ -714,8 +733,16 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     'tern:bookmark-remove': (id) => library.removeBookmark(id),
     'tern:bookmark-move': (id, index) => library.moveBookmark(id, index),
     'tern:history-search': (query) => library.searchHistory(query),
-    'tern:history-remove': (url) => library.removeHistory(url),
-    'tern:history-clear': () => library.clearHistory(),
+    'tern:history-remove': (url) => {
+      library.removeHistory(url);
+      pageIndex.remove(url);
+    },
+    'tern:history-clear': () => {
+      library.clearHistory();
+      pageIndex.clear();
+    },
+    // Only pages still in history count, so anything removed from it can't show up here.
+    'tern:search-pages': (query) => (settings.indexPages ? pageIndex.search(query).filter((page) => library.history.has(page.url)) : []),
     'tern:downloads-refresh': () => downloads.refresh(),
     'tern:download-action': (id, action) => downloads.action(id, action),
     'tern:downloads-clear': () => downloads.clearFinished(),
@@ -770,8 +797,8 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
       update(safe);
     },
     'tern:reset-settings': () => {
-      const { adblock: on, allowedSites, totalBlocked, siteZoom, saveHistory, askDownloadPath, autoUpdate, httpsOnly, stripTracking, globalPrivacyControl, proxyEnabled, proxyServer, proxyUsername, proxyPassword } = settings;
-      settings = clean({ adblock: on, allowedSites, totalBlocked, siteZoom, saveHistory, askDownloadPath, autoUpdate, httpsOnly, stripTracking, globalPrivacyControl, proxyEnabled, proxyServer, proxyUsername, proxyPassword }, DEFAULTS);
+      const { adblock: on, allowedSites, totalBlocked, siteZoom, indexPages, saveHistory, askDownloadPath, autoUpdate, httpsOnly, stripTracking, globalPrivacyControl, proxyEnabled, proxyServer, proxyUsername, proxyPassword } = settings;
+      settings = clean({ adblock: on, allowedSites, totalBlocked, siteZoom, indexPages, saveHistory, askDownloadPath, autoUpdate, httpsOnly, stripTracking, globalPrivacyControl, proxyEnabled, proxyServer, proxyUsername, proxyPassword }, DEFAULTS);
       settingsFile.write(settings);
       pushState();
     },
@@ -903,6 +930,8 @@ async function start({ userData, show = true, openUrl = '' } = {}) {
     downloads,
     updater,
     mainMenuItems,
+    pageIndex,
+    pageText,
     importBookmarkFiles,
     setPermissionChoiceForTest: (origin, name, allowed) => permissionChoices.set(`${origin}|${name}`, allowed),
     tor,

@@ -18,7 +18,7 @@ reuse their code, names or artwork. Tern stays light, and has no AI features.
 7. [x] Bookmark folders, and import from other browsers (most browsers)
 8. [x] Tab groups or workspaces (Min's tasks, Zen)
 9. [x] Split view: two pages side by side (Zen, Vivaldi)
-10. [ ] Full-text search of pages you've visited, stored only on this PC (Min)
+10. [x] Full-text search of pages you've visited, stored only on this PC (Min)
 11. [ ] Set Tern as the default browser (most browsers)
 12. [ ] Multiple windows (most browsers)
 13. [ ] User scripts and user styles per site (Min, Floorp)

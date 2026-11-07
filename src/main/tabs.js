@@ -948,10 +948,12 @@ class Tabs extends EventEmitter {
     wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {
       if (isMainFrame && isWebUrl(url)) {
         tab.url = url;
+        this.emit('page-loaded', tab, wc);
         if (!tab.tor) this.emit('visit', url, '');
       }
       update();
     });
+    wc.on('did-finish-load', () => this.emit('page-loaded', tab, wc));
     wc.on('did-start-loading', () => {
       tab.loading = true;
       update();
